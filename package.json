@@ -1,7 +1,7 @@
 {
   "name": "proxy-own-browser",
   "productName": "Proxy Own Browser",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "private": true,
   "description": "Windows multi-profile browser with isolated persistent sessions and per-profile proxy settings.",
   "author": "mdnasiman641-cpu",
