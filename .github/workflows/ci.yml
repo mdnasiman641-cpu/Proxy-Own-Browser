@@ -24,9 +24,13 @@ jobs:
       - uses: actions/setup-node@v5
         with:
           node-version: 24
+          cache: npm
 
-      - name: Install dependencies
-        run: npm install --no-audit --no-fund 2>&1 | tee ci-install.log; exit ${PIPESTATUS[0]}
+      - name: Show toolchain
+        run: node -v && npm -v
+
+      - name: Install dependencies (clean, from package-lock.json)
+        run: npm ci --no-audit --no-fund 2>&1 | tee ci-install.log; exit ${PIPESTATUS[0]}
 
       - name: Typecheck
         run: npm run typecheck 2>&1 | tee ci-typecheck.log; exit ${PIPESTATUS[0]}
@@ -40,7 +44,7 @@ jobs:
       - name: Build app
         run: npm run build 2>&1 | tee ci-build.log; exit ${PIPESTATUS[0]}
 
-      - name: End-to-end smoke test (two isolated profiles + restart)
+      - name: End-to-end smoke test (profiles, tabs, proxy tests, restart)
         run: node scripts/smoke-test.mjs 2>&1 | tee ci-smoke.log; exit ${PIPESTATUS[0]}
 
       - name: Package Windows installer and portable EXE
