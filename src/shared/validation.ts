@@ -176,6 +176,13 @@ export const settingsUpdateSchema = z.object({
 
 export const addressInputSchema = z.string().max(LIMITS.urlMax)
 
+export const optionalAddressSchema = addressInputSchema.optional()
+
+export const tabIdSchema = z.string().regex(/^tab-\d{1,9}$/, 'Invalid tab id')
+
+/** Profile id for a proxy test, or null when testing a profile that has not been saved yet. */
+export const nullableProfileIdSchema = profileIdSchema.nullable()
+
 export type ParsedProfileInput = z.infer<typeof profileInputSchema>
 export type ParsedProfileUpdate = z.infer<typeof profileUpdateSchema>
 export type ParsedProxyInput = z.infer<typeof proxyInputSchema>

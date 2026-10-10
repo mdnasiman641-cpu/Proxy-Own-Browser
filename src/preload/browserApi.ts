@@ -13,6 +13,9 @@ export const browserApi: BrowserApi = {
   reload: () => ipcRenderer.invoke(C.reload),
   stop: () => ipcRenderer.invoke(C.stop),
   home: () => ipcRenderer.invoke(C.home),
+  newTab: (input) => ipcRenderer.invoke(C.newTab, input),
+  closeTab: (tabId) => ipcRenderer.invoke(C.closeTab, tabId),
+  activateTab: (tabId) => ipcRenderer.invoke(C.activateTab, tabId),
   onState: (listener) => subscribe<NavigationState>(Events.navigationState, listener),
   onFocusAddressBar: (listener) => subscribe(Events.focusAddressBar, () => listener())
 }

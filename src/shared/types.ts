@@ -114,6 +114,60 @@ export interface NavigationState {
   profileName: string
   profileColor: string
   proxyLabel: string | null
+  /** Tabs of this profile window, in display order. */
+  tabs: TabState[]
+  activeTabId: string | null
+}
+
+export const PROXY_TEST_STATUSES = [
+  'success',
+  'timeout',
+  'proxy-unreachable',
+  'proxy-error',
+  'auth-required',
+  'auth-failed',
+  'dns-failed',
+  'tls-error',
+  'http-error',
+  'invalid-response',
+  'network-error',
+  'invalid-config'
+] as const
+export type ProxyTestStatus = (typeof PROXY_TEST_STATUSES)[number]
+
+/** Outcome of a real request made through a profile's proxy. `ok` is true only on success. */
+export interface ProxyTestResult {
+  ok: boolean
+  status: ProxyTestStatus
+  /** User-facing explanation. Never contains credentials. */
+  message: string
+  /** Public IP address reported by the endpoint, when the request succeeded. */
+  ip: string | null
+  /** Time for the successful request, in milliseconds. */
+  responseTimeMs: number | null
+  /** Host name of the IP-check service that was used (or last tried). */
+  endpoint: string | null
+  /** The route that was tested, e.g. "HTTP 1.2.3.4:8080 (auth)" or "Direct connection". */
+  route: string
+  testedAt: string
+}
+
+export interface TabState {
+  id: string
+  title: string
+  url: string
+  isLoading: boolean
+  crashed: boolean
+}
+
+export interface ResourceUsage {
+  /** Total memory used by all app processes, in MB. */
+  totalMemoryMb: number
+  processCount: number
+  openWindows: number
+  openTabs: number
+  /** Configured limit on profile windows open at the same time. */
+  maxOpenProfiles: number
 }
 
 /** Uniform response envelope for every IPC call. */

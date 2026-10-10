@@ -5,10 +5,12 @@ import {
   type Profile,
   type ProfileUpdate,
   type ProxyInput,
-  type ProxyProtocol
+  type ProxyProtocol,
+  type ProxyTestResult
 } from '@shared/types'
 import { LIMITS, PROFILE_COLORS } from '@shared/validation'
-import { errorMessage } from '../../common/ipc'
+import { errorMessage, unwrap } from '../../common/ipc'
+import { ProxyTestResultView } from './ProxyTestResultView'
 
 interface ProfileFormProps {
   initial?: Profile
@@ -36,6 +38,11 @@ export function ProfileForm({ initial, mode = 'full', submitLabel, onSubmit, onC
   const [paste, setPaste] = useState('')
   const [error, setError] = useState<string | null>(null)
   const [busy, setBusy] = useState(false)
+  const [testing, setTesting] = useState(false)
+  /** Result of the last test, tagged with the form values it was run against. */
+  const [test, setTest] = useState<{ key: string; result?: ProxyTestResult; error?: string } | null>(
+    null
+  )
 
   const isSocks = protocol === 'socks4' || protocol === 'socks5'
   const hasStoredPassword = Boolean(p?.hasPassword) && !clearPassword
@@ -81,6 +88,24 @@ export function ProfileForm({ initial, mode = 'full', submitLabel, onSubmit, onC
       username: username.trim(),
       password: nextPassword,
       bypassRules: bypass.trim()
+    }
+  }
+
+  const draftKey = JSON.stringify(buildProxy())
+  const currentTest = test?.key === draftKey ? test : null
+
+  /** Makes a real request through the proxy as currently entered (saved or not). */
+  const runTest = async (): Promise<void> => {
+    const key = draftKey
+    setTesting(true)
+    setTest(null)
+    try {
+      const result = await unwrap(window.pob.testProxy(initial?.id ?? null, buildProxy()))
+      setTest({ key, result })
+    } catch (e) {
+      setTest({ key, error: errorMessage(e) })
+    } finally {
+      setTesting(false)
     }
   }
 
@@ -250,6 +275,22 @@ export function ProfileForm({ initial, mode = 'full', submitLabel, onSubmit, onC
                 placeholder="localhost, *.example.com"
               />
             </label>
+            <div className="test-row">
+              <button
+                type="button"
+                className="button"
+                onClick={() => void runTest()}
+                disabled={testing || busy}
+                data-testid="test-proxy"
+              >
+                {testing ? 'Testing…' : 'Test proxy'}
+              </button>
+              <span className="hint">
+                Connects through this proxy to a public IP-check service. Works before saving.
+              </span>
+            </div>
+            {currentTest?.result && <ProxyTestResultView result={currentTest.result} />}
+            {currentTest?.error && <div className="alert error">{currentTest.error}</div>}
           </>
         ) : (
           <p className="hint">This profile connects directly without a proxy.</p>

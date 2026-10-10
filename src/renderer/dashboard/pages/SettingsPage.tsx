@@ -1,5 +1,5 @@
-import { useEffect, useState, type FormEvent } from 'react'
-import { SEARCH_ENGINES, type AppInfo, type SearchEngineId } from '@shared/types'
+import { useCallback, useEffect, useState, type FormEvent } from 'react'
+import { SEARCH_ENGINES, type AppInfo, type ResourceUsage, type SearchEngineId } from '@shared/types'
 import { LIMITS } from '@shared/validation'
 import { Icon } from '../../common/Icon'
 import { errorMessage, unwrap } from '../../common/ipc'
@@ -14,12 +14,20 @@ export function SettingsPage({ data }: { data: AppData }) {
   const [error, setError] = useState<string | null>(null)
   const [busy, setBusy] = useState(false)
   const [info, setInfo] = useState<AppInfo | null>(null)
+  const [usage, setUsage] = useState<ResourceUsage | null>(null)
+
+  const refreshUsage = useCallback(() => {
+    unwrap(window.pob.resourceUsage())
+      .then(setUsage)
+      .catch(() => setUsage(null))
+  }, [])
 
   useEffect(() => {
     unwrap(window.pob.appInfo())
       .then(setInfo)
       .catch(() => setInfo(null))
-  }, [])
+    refreshUsage()
+  }, [refreshUsage])
 
   const save = async (event: FormEvent): Promise<void> => {
     event.preventDefault()
@@ -89,6 +97,39 @@ export function SettingsPage({ data }: { data: AppData }) {
           </button>
         </div>
       </form>
+
+      <div className="panel about" data-testid="resource-usage">
+        <h2>Resource usage</h2>
+        <p>
+          Check this with your usual sites open before raising the window limit. If memory gets close
+          to what your PC has free, keep the limit lower.
+        </p>
+        {usage ? (
+          <dl>
+            <dt>Memory used by the app</dt>
+            <dd>{usage.totalMemoryMb.toLocaleString()} MB</dd>
+            <dt>Processes</dt>
+            <dd>{usage.processCount}</dd>
+            <dt>Profile windows open</dt>
+            <dd>
+              {usage.openWindows} of {usage.maxOpenProfiles} allowed
+            </dd>
+            <dt>Tabs open</dt>
+            <dd>{usage.openTabs}</dd>
+            {usage.openWindows > 0 && (
+              <>
+                <dt>Average per window</dt>
+                <dd>~{Math.round(usage.totalMemoryMb / usage.openWindows).toLocaleString()} MB (incl. dashboard)</dd>
+              </>
+            )}
+          </dl>
+        ) : (
+          <p className="muted">Not available.</p>
+        )}
+        <button type="button" className="button small" onClick={refreshUsage}>
+          Refresh
+        </button>
+      </div>
 
       {info && (
         <div className="panel about">

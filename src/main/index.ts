@@ -11,6 +11,7 @@ import { createDashboardWindow } from './electron/dashboardWindow'
 import { ElectronSafeStorageCipher } from './electron/electronCipher'
 import { registerIpcHandlers } from './electron/ipcHandlers'
 import { ProfileWindowManager } from './electron/profileWindows'
+import { ProxyTester } from './electron/proxyTester'
 import { SessionManager } from './electron/sessionManager'
 import { runSmokeTest } from './smokeTest'
 
@@ -62,6 +63,7 @@ async function start(): Promise<void> {
   const profiles = new ProfileService(new ProfileRepository(db), cipher)
   const settings = new SettingsService(db)
   const sessions = new SessionManager(userData, logger)
+  const proxyTester = new ProxyTester(logger, proxyTesterOptions())
 
   const broadcast = (channel: string, payload?: unknown): void => {
     if (dashboard && !dashboard.isDestroyed()) dashboard.webContents.send(channel, payload)
@@ -80,6 +82,7 @@ async function start(): Promise<void> {
     sessions,
     windows,
     cipher,
+    proxyTester,
     logger,
     getDashboard: () => dashboard,
     notifyProfilesChanged: () => broadcast(Events.profilesChanged)
@@ -142,8 +145,24 @@ async function start(): Promise<void> {
       profiles,
       sessions,
       windows,
+      proxyTester,
       getDashboard: () => dashboard,
       logger
     })
+  }
+}
+
+/**
+ * The automated smoke test points proxy checks at a local fixture server so it can verify
+ * success, timeouts and auth failures without depending on the internet. These variables
+ * are ignored unless the smoke test is running.
+ */
+function proxyTesterOptions(): ConstructorParameters<typeof ProxyTester>[1] {
+  if (!smokeStage) return {}
+  const url = process.env.POB_PROXY_TEST_URL
+  const timeout = Number(process.env.POB_PROXY_TEST_TIMEOUT_MS)
+  return {
+    ...(url ? { endpoints: [{ url, format: 'json' as const }] } : {}),
+    ...(timeout > 0 ? { timeoutMs: timeout } : {})
   }
 }

@@ -24,12 +24,19 @@ jobs:
       - uses: actions/setup-node@v5
         with:
           node-version: 24
+          cache: npm
 
-      - name: Install dependencies
-        run: npm install --no-audit --no-fund 2>&1 | tee ci-install.log; exit ${PIPESTATUS[0]}
+      - name: Show toolchain
+        run: node -v && npm -v
+
+      - name: Install dependencies (clean, from package-lock.json)
+        run: npm ci --no-audit --no-fund 2>&1 | tee ci-install.log; exit ${PIPESTATUS[0]}
 
       - name: Typecheck
         run: npm run typecheck 2>&1 | tee ci-typecheck.log; exit ${PIPESTATUS[0]}
+
+      - name: Lint
+        run: npm run lint 2>&1 | tee ci-lint.log; exit ${PIPESTATUS[0]}
 
       - name: Unit tests
         run: npm test 2>&1 | tee ci-test.log; exit ${PIPESTATUS[0]}
@@ -37,7 +44,7 @@ jobs:
       - name: Build app
         run: npm run build 2>&1 | tee ci-build.log; exit ${PIPESTATUS[0]}
 
-      - name: End-to-end smoke test (two isolated profiles + restart)
+      - name: End-to-end smoke test (profiles, tabs, proxy tests, restart)
         run: node scripts/smoke-test.mjs 2>&1 | tee ci-smoke.log; exit ${PIPESTATUS[0]}
 
       - name: Package Windows installer and portable EXE
@@ -54,7 +61,12 @@ jobs:
             [ -f "$f" ] || continue
             level=notice
             grep -qiE "error|fail|✗|×" "$f" && level=warning
-            body=$(tail -n 45 "$f" | sed -e 's/\x1b\[[0-9;]*m//g' | sed -e 's/%/%25/g' | awk '{printf "%s%%0A", $0}')
+            if [ "$f" = ci-smoke.log ]; then
+              body=$(grep -E '^\[smoke\]' "$f" | tail -n 90)   # every check result
+            else
+              body=$(tail -n 45 "$f")
+            fi
+            body=$(printf '%s\n' "$body" | sed -e 's/\x1b\[[0-9;]*m//g' | sed -e 's/%/%25/g' | awk '{printf "%s%%0A", $0}')
             echo "::${level} title=${f}::${body}"
           done
 

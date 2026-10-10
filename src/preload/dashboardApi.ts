@@ -17,6 +17,8 @@ export const dashboardApi: DashboardApi = {
   importBackup: () => ipcRenderer.invoke(C.importBackup),
   appInfo: () => ipcRenderer.invoke(C.appInfo),
   openDataFolder: () => ipcRenderer.invoke(C.openDataFolder),
+  testProxy: (profileId, draft) => ipcRenderer.invoke(C.testProxy, profileId, draft),
+  resourceUsage: () => ipcRenderer.invoke(C.resourceUsage),
   onProfilesChanged: (listener) => subscribe(Events.profilesChanged, () => listener()),
   onOpenProfilesChanged: (listener) => subscribe<string[]>(Events.openProfilesChanged, listener)
 }
