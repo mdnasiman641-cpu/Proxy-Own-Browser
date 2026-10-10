@@ -12,6 +12,7 @@ coverage/
 logs/
 *.log
 npm-debug.log*
+ci-*.log
 
 # Local runtime data — never commit browser sessions, cookies or databases
 *.sqlite
