@@ -44,11 +44,16 @@ jobs:
       - name: Build app
         run: npm run build 2>&1 | tee ci-build.log; exit ${PIPESTATUS[0]}
 
-      - name: End-to-end smoke test (profiles, tabs, proxy tests, restart)
+      - name: End-to-end smoke test (profiles, tabs, proxy tests, profile manager, restart)
         run: node scripts/smoke-test.mjs 2>&1 | tee ci-smoke.log; exit ${PIPESTATUS[0]}
 
-      - name: Package Windows installer and portable EXE
-        run: npx electron-builder --win --x64 --publish never 2>&1 | tee ci-package.log; exit ${PIPESTATUS[0]}
+      - name: Package Windows installer (npm run dist:win)
+        run: npm run dist:win 2>&1 | tee ci-dist-win.log; exit ${PIPESTATUS[0]}
+        env:
+          CSC_IDENTITY_AUTO_DISCOVERY: 'false'
+
+      - name: Package portable EXE (npm run dist:portable)
+        run: npm run dist:portable 2>&1 | tee ci-dist-portable.log; exit ${PIPESTATUS[0]}
         env:
           CSC_IDENTITY_AUTO_DISCOVERY: 'false'
 
@@ -62,7 +67,7 @@ jobs:
             level=notice
             grep -qiE "error|fail|✗|×" "$f" && level=warning
             if [ "$f" = ci-smoke.log ]; then
-              body=$(grep -E '^\[smoke\]' "$f" | tail -n 90)   # every check result
+              body=$(grep -E '^\[smoke\]' "$f" | tail -n 160)   # every check result
             else
               body=$(tail -n 45 "$f")
             fi

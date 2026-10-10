@@ -1,7 +1,7 @@
 {
   "name": "proxy-own-browser",
   "productName": "Proxy Own Browser",
-  "version": "0.2.0",
+  "version": "0.3.0",
   "private": true,
   "description": "Windows multi-profile browser with isolated persistent sessions and per-profile proxy settings.",
   "author": "mdnasiman641-cpu",
@@ -26,7 +26,9 @@
     "build:win": "npm run check && npm run build && electron-builder --win --x64 --publish never",
     "build:win:installer": "npm run build && electron-builder --win nsis --x64 --publish never",
     "build:win:portable": "npm run build && electron-builder --win portable --x64 --publish never",
-    "build:dir": "npm run build && electron-builder --dir --publish never"
+    "build:dir": "npm run build && electron-builder --dir --publish never",
+    "dist:win": "npm run build && electron-builder --win nsis --x64 --publish never",
+    "dist:portable": "npm run build && electron-builder --win portable --x64 --publish never"
   },
   "dependencies": {
     "sql.js": "^1.14.1",
