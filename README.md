@@ -36,7 +36,8 @@ Built with Electron, React + TypeScript + Vite, SQLite (sql.js), and packaged wi
 ## Requirements
 
 - Windows 10/11 x64 (development also works on macOS/Linux)
-- Node.js 22.12 or newer and npm
+- Node.js 24 LTS or newer (includes npm 11). npm 10, bundled with Node 22, has a known crash
+  (`Cannot read properties of null (reading 'edgesOut')`) when installing this project.
 
 ## Getting started
 
