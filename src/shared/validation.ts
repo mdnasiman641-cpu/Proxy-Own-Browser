@@ -1,5 +1,5 @@
 import { z } from 'zod'
-import { PROXY_PROTOCOLS, SEARCH_ENGINES, type SearchEngineId } from './types'
+import { PROXY_PROTOCOLS, SEARCH_ENGINES, UI_LANGUAGES, type SearchEngineId } from './types'
 
 export const LIMITS = {
   nameMax: 60,
@@ -9,7 +9,17 @@ export const LIMITS = {
   bypassMax: 1000,
   searchMax: 200,
   maxProfiles: 500,
-  maxOpenProfilesCeiling: 10
+  maxOpenProfilesCeiling: 10,
+  groupNameMax: 40,
+  tagMax: 32,
+  tagsPerProfile: 20,
+  maxGroups: 200,
+  maxTags: 500,
+  maxTemplates: 100,
+  bulkCreateMax: 100,
+  bulkIdsMax: 500,
+  startNumberMax: 999_999,
+  paddingMax: 6
 } as const
 
 // eslint-disable-next-line no-control-regex
@@ -52,6 +62,47 @@ export function isHttpUrl(value: string): boolean {
 }
 
 export const profileIdSchema = z.string().regex(UUID_RE, 'Invalid profile id')
+export const groupIdSchema = z.string().regex(UUID_RE, 'Invalid group id')
+export const tagIdSchema = z.string().regex(UUID_RE, 'Invalid tag id')
+export const templateIdSchema = z.string().regex(UUID_RE, 'Invalid template id')
+
+/** A list of distinct profile ids for a bulk action. */
+export const profileIdsSchema = z
+  .array(profileIdSchema)
+  .min(1, 'Select at least one profile')
+  .max(LIMITS.bulkIdsMax, `At most ${LIMITS.bulkIdsMax} profiles at a time`)
+  .refine((ids) => new Set(ids).size === ids.length, 'The selection contains duplicates')
+
+export const tagNameSchema = z
+  .string()
+  .trim()
+  .min(1, 'Tag names cannot be empty')
+  .max(LIMITS.tagMax, `Tags can be at most ${LIMITS.tagMax} characters`)
+  .refine((v) => !CONTROL_CHARS.test(v) && !v.includes(','), 'Tags cannot contain commas or control characters')
+
+/** Tag list, de-duplicated case-insensitively (first spelling wins). */
+export const tagListSchema = z
+  .array(tagNameSchema)
+  .max(LIMITS.tagsPerProfile, `At most ${LIMITS.tagsPerProfile} tags`)
+  .transform((tags) => {
+    const seen = new Set<string>()
+    return tags.filter((t) => {
+      const key = t.toLocaleLowerCase()
+      if (seen.has(key)) return false
+      seen.add(key)
+      return true
+    })
+  })
+
+export const groupInputSchema = z.object({
+  name: z
+    .string()
+    .trim()
+    .min(1, 'Group name is required')
+    .max(LIMITS.groupNameMax, `Group names can be at most ${LIMITS.groupNameMax} characters`)
+    .refine((v) => !CONTROL_CHARS.test(v), 'Group name contains invalid characters'),
+  color: z.string().regex(/^#[0-9a-f]{6}$/i, 'Color must be a hex value like #2563eb').optional()
+})
 
 const nameSchema = z
   .string()
@@ -140,7 +191,9 @@ export const profileInputSchema = z.object({
   notes: notesSchema.optional().default(''),
   color: colorSchema.optional(),
   startUrl: startUrlSchema.nullable().optional(),
-  proxy: proxyInputSchema.optional()
+  proxy: proxyInputSchema.optional(),
+  groupId: groupIdSchema.nullable().optional(),
+  tags: tagListSchema.optional()
 })
 
 export const profileUpdateSchema = z.object({
@@ -148,7 +201,72 @@ export const profileUpdateSchema = z.object({
   notes: notesSchema.optional(),
   color: colorSchema.optional(),
   startUrl: startUrlSchema.nullable().optional(),
-  proxy: proxyInputSchema.optional()
+  proxy: proxyInputSchema.optional(),
+  groupId: groupIdSchema.nullable().optional(),
+  tags: tagListSchema.optional()
+})
+
+export const templateProxySchema = z.discriminatedUnion('mode', [
+  z.object({ mode: z.literal('none') }),
+  z.object({ mode: z.literal('copy-from-profile'), profileId: profileIdSchema })
+])
+
+export const templateInputSchema = z.object({
+  name: z
+    .string()
+    .trim()
+    .min(1, 'Template name is required')
+    .max(LIMITS.nameMax, `Template names can be at most ${LIMITS.nameMax} characters`)
+    .refine((v) => !CONTROL_CHARS.test(v), 'Template name contains invalid characters'),
+  notes: notesSchema.optional().default(''),
+  color: colorSchema.nullable().optional().default(null),
+  startUrl: startUrlSchema.nullable().optional().default(null),
+  groupId: groupIdSchema.nullable().optional().default(null),
+  tags: tagListSchema.optional().default([]),
+  proxy: templateProxySchema.optional().default({ mode: 'none' })
+})
+
+export const bulkCreateSpecSchema = z.object({
+  nameTemplate: z
+    .string()
+    .trim()
+    .min(1, 'Enter a name template, for example Profile-{number}')
+    .max(LIMITS.nameMax, `The name template can be at most ${LIMITS.nameMax} characters`),
+  count: z.coerce
+    .number()
+    .int('Count must be a whole number')
+    .min(1, 'Create at least 1 profile')
+    .max(LIMITS.bulkCreateMax, `At most ${LIMITS.bulkCreateMax} profiles per batch`),
+  startNumber: z.coerce
+    .number()
+    .int('Start number must be a whole number')
+    .min(0, 'Start number cannot be negative')
+    .max(LIMITS.startNumberMax)
+    .optional()
+    .default(1),
+  padding: z.coerce
+    .number()
+    .int()
+    .min(0)
+    .max(LIMITS.paddingMax, `Zero-padding can be at most ${LIMITS.paddingMax} digits`)
+    .optional()
+    .default(0),
+  templateId: templateIdSchema.nullable().optional().default(null),
+  groupId: groupIdSchema.nullable().optional(),
+  tags: tagListSchema.optional().default([]),
+  startUrl: startUrlSchema.nullable().optional(),
+  proxySourceProfileId: profileIdSchema.nullable().optional()
+})
+
+/** Names chosen in the bulk wizard (all, or only the failed ones when retrying). */
+export const bulkNamesSchema = z
+  .array(nameSchema)
+  .min(1, 'Nothing to create')
+  .max(LIMITS.bulkCreateMax, `At most ${LIMITS.bulkCreateMax} profiles per batch`)
+
+export const bulkTagsChangeSchema = z.object({
+  add: tagListSchema.optional().default([]),
+  remove: tagListSchema.optional().default([])
 })
 
 export const searchQuerySchema = z.string().max(LIMITS.searchMax).optional()
@@ -171,7 +289,8 @@ export const settingsUpdateSchema = z.object({
     .min(1, 'At least 1 profile window must be allowed')
     .max(LIMITS.maxOpenProfilesCeiling, `At most ${LIMITS.maxOpenProfilesCeiling} windows`)
     .optional(),
-  confirmBeforeDelete: z.boolean().optional()
+  confirmBeforeDelete: z.boolean().optional(),
+  language: z.enum(UI_LANGUAGES).optional()
 })
 
 export const addressInputSchema = z.string().max(LIMITS.urlMax)
@@ -187,6 +306,8 @@ export type ParsedProfileInput = z.infer<typeof profileInputSchema>
 export type ParsedProfileUpdate = z.infer<typeof profileUpdateSchema>
 export type ParsedProxyInput = z.infer<typeof proxyInputSchema>
 export type ParsedSettingsUpdate = z.infer<typeof settingsUpdateSchema>
+export type ParsedTemplateInput = z.infer<typeof templateInputSchema>
+export type ParsedBulkCreateSpec = z.infer<typeof bulkCreateSpecSchema>
 
 /** Turns a zod error into a single readable sentence for the UI. */
 export function formatValidationError(error: z.ZodError): string {
