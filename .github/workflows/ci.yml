@@ -67,13 +67,23 @@ jobs:
             level=notice
             grep -qiE "error|fail|✗|×" "$f" && level=warning
             if [ "$f" = ci-smoke.log ]; then
-              body=$(grep -E '^\[smoke\]' "$f" | tail -n 160)   # every check result
+              # One annotation per stage (annotations are size-limited) plus the overall result.
+              for stage in setup verify; do
+                part=$(grep -E "^\[smoke\] $stage:" "$f" | grep -vE ': PASS (dashboard renders|dashboard preload API available)$' | sed -e 's/%/%25/g' | awk '{printf "%s%%0A", $0}')
+                echo "::${level} title=ci-smoke.log ($stage)::${part}"
+              done
+              body=$(grep -E '^\[smoke\]' "$f" | grep -vE '^\[smoke\] (setup|verify):' | tail -n 20)
             else
               body=$(tail -n 45 "$f")
             fi
             body=$(printf '%s\n' "$body" | sed -e 's/\x1b\[[0-9;]*m//g' | sed -e 's/%/%25/g' | awk '{printf "%s%%0A", $0}')
             echo "::${level} title=${f}::${body}"
           done
+
+      - name: List Windows executables
+        run: |
+          list=$(ls -l release/*/*.exe | awk '{printf "%s  %.1f MB%%0A", $NF, $5/1048576}')
+          echo "::notice title=Windows executables::${list}"
 
       - name: Upload Windows build
         uses: actions/upload-artifact@v4
