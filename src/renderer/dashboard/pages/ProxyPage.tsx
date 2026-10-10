@@ -6,14 +6,17 @@ import { Modal } from '../components/Modal'
 import { ProfileAvatar } from '../components/ProfileBadge'
 import { ProfileForm } from '../components/ProfileForm'
 import { ProxyTestResultView } from '../components/ProxyTestResultView'
+import { StatusBadge } from '../components/Bits'
+import { useI18n } from '../i18n'
 import type { AppData } from '../useAppData'
 
 export function ProxyPage({ data }: { data: AppData }) {
+  const { t } = useI18n()
   const [editing, setEditing] = useState<Profile | null>(null)
   const [tests, setTests] = useState<
     Record<string, { running: boolean; result?: ProxyTestResult; error?: string; savedAt: string }>
   >({})
-  const openSet = new Set(data.openIds)
+  const status = (id: string) => data.statuses[id] ?? 'closed'
 
   /** Tests the saved proxy of a profile with a real request. */
   const runTest = async (profile: Profile): Promise<void> => {
@@ -33,30 +36,24 @@ export function ProxyPage({ data }: { data: AppData }) {
     <section className="page">
       <header className="page-header">
         <div>
-          <h1>Proxy Settings</h1>
-          <p className="subtitle">
-            Every profile can use its own HTTP, HTTPS, SOCKS4 or SOCKS5 proxy. Changes apply to
-            open windows immediately.
-          </p>
+          <h1>{t('nav.proxies')}</h1>
+          <p className="subtitle">{t('proxyPage.subtitle')}</p>
         </div>
       </header>
 
-      <div className="info-box">
-        Passwords are encrypted with Windows data protection for your user account and are never
-        shown again or written to logs. Backups do not include passwords.
-      </div>
+      <div className="info-box">{t('proxyPage.info')}</div>
 
       {data.profiles.length === 0 ? (
-        <div className="empty">Create a profile first, then assign it a proxy here.</div>
+        <div className="empty">{t('proxyPage.empty')}</div>
       ) : (
         <div className="table-wrap">
           <table className="table">
             <thead>
               <tr>
-                <th>Profile</th>
-                <th>Proxy</th>
-                <th>Authentication</th>
-                <th>Bypass</th>
+                <th>{t('profiles.col.profile')}</th>
+                <th>{t('profiles.col.proxy')}</th>
+                <th>{t('proxyPage.col.auth')}</th>
+                <th>{t('proxyPage.col.bypass')}</th>
                 <th className="actions-col" />
               </tr>
             </thead>
@@ -71,21 +68,21 @@ export function ProxyPage({ data }: { data: AppData }) {
                     <div className="profile-cell">
                       <ProfileAvatar profile={profile} size={28} />
                       <span>{profile.name}</span>
-                      {openSet.has(profile.id) && <span className="pill green">Open</span>}
+                      {status(profile.id) !== 'closed' && <StatusBadge status={status(profile.id)} compact />}
                     </div>
                   </td>
-                  <td>{describeProxy(profile.proxy) ?? <span className="muted">Direct</span>}</td>
+                  <td>{describeProxy(profile.proxy) ?? <span className="muted">{t('common.direct')}</span>}</td>
                   <td>
                     {!profile.proxy ? (
                       <span className="muted">—</span>
                     ) : profile.proxy.username ? (
                       profile.proxy.hasPassword ? (
-                        'Username & password saved'
+                        t('proxyPage.authSaved')
                       ) : (
-                        <span className="warn">Password not set</span>
+                        <span className="warn">{t('profiles.passwordMissing')}</span>
                       )
                     ) : (
-                      <span className="muted">None</span>
+                      <span className="muted">{t('common.none')}</span>
                     )}
                   </td>
                   <td className="muted">{profile.proxy?.bypassRules || '—'}</td>
@@ -98,10 +95,10 @@ export function ProxyPage({ data }: { data: AppData }) {
                         onClick={() => void runTest(profile)}
                         data-testid={`test-proxy-${profile.id}`}
                       >
-                        {test?.running ? 'Testing…' : 'Test'}
+                        {test?.running ? t('form.testing') : t('proxyPage.test')}
                       </button>
                       <button type="button" className="button small" onClick={() => setEditing(profile)}>
-                        Configure
+                        {t('proxyPage.configure')}
                       </button>
                     </div>
                   </td>
@@ -123,14 +120,15 @@ export function ProxyPage({ data }: { data: AppData }) {
       )}
 
       {editing && (
-        <Modal title={`Proxy for ${editing.name}`} onClose={() => setEditing(null)}>
+        <Modal title={t('proxyPage.modalTitle', { name: editing.name })} onClose={() => setEditing(null)}>
           <ProfileForm
             initial={editing}
             mode="proxy"
-            submitLabel="Save proxy"
+            submitLabel={t('form.saveProxy')}
             onCancel={() => setEditing(null)}
             onSubmit={async (input) => {
-              await data.updateProfile(editing.id, input)
+              const profile = await data.updateProfile(editing.id, input)
+              data.notify('success', t('profiles.saved', { name: profile.name }))
               setEditing(null)
             }}
           />

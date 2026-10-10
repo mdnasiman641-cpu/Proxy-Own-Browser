@@ -1,5 +1,14 @@
 import { useCallback, useEffect, useState } from 'react'
-import type { AppSettings, Profile, ProfileInput, ProfileUpdate } from '@shared/types'
+import type {
+  AppSettings,
+  Profile,
+  ProfileGroup,
+  ProfileInput,
+  ProfileRuntimeStatus,
+  ProfileTag,
+  ProfileTemplate,
+  ProfileUpdate
+} from '@shared/types'
 import { errorMessage, unwrap } from '../common/ipc'
 
 export interface Toast {
@@ -8,10 +17,18 @@ export interface Toast {
   message: string
 }
 
-/** Central dashboard state: profiles, open windows, settings and toast notifications. */
+export type TemplateWithProblems = ProfileTemplate & { problems: string[] }
+
+/**
+ * Central dashboard state: profiles, groups, tags, templates, live statuses, settings and
+ * toasts. Everything is loaded from the main process; nothing is cached across restarts here.
+ */
 export function useAppData() {
   const [profiles, setProfiles] = useState<Profile[]>([])
-  const [openIds, setOpenIds] = useState<string[]>([])
+  const [groups, setGroups] = useState<ProfileGroup[]>([])
+  const [tags, setTags] = useState<ProfileTag[]>([])
+  const [templates, setTemplates] = useState<TemplateWithProblems[]>([])
+  const [statuses, setStatuses] = useState<Record<string, ProfileRuntimeStatus>>({})
   const [settings, setSettings] = useState<AppSettings | null>(null)
   const [loading, setLoading] = useState(true)
   const [loadError, setLoadError] = useState<string | null>(null)
@@ -23,61 +40,72 @@ export function useAppData() {
     setTimeout(() => setToasts((t) => t.filter((x) => x.id !== id)), kind === 'error' ? 7000 : 3500)
   }, [])
 
+  const refreshCatalog = useCallback(async () => {
+    const [g, tg, tpl] = await Promise.all([
+      unwrap(window.pob.listGroups()),
+      unwrap(window.pob.listTags()),
+      unwrap(window.pob.listTemplates())
+    ])
+    setGroups(g)
+    setTags(tg)
+    setTemplates(tpl)
+  }, [])
+
   const refresh = useCallback(async () => {
     try {
-      const [list, ids, s] = await Promise.all([
+      const [list, st, s] = await Promise.all([
         unwrap(window.pob.listProfiles()),
-        unwrap(window.pob.openProfileIds()),
+        unwrap(window.pob.profileStatuses()),
         unwrap(window.pob.getSettings())
       ])
       setProfiles(list)
-      setOpenIds(ids)
+      setStatuses(st)
       setSettings(s)
+      await refreshCatalog()
       setLoadError(null)
     } catch (error) {
       setLoadError(errorMessage(error))
     } finally {
       setLoading(false)
     }
-  }, [])
+  }, [refreshCatalog])
 
   useEffect(() => {
     void refresh()
     const offProfiles = window.pob.onProfilesChanged(() => void refresh())
-    const offOpen = window.pob.onOpenProfilesChanged((ids) => setOpenIds(ids))
+    const offStatuses = window.pob.onProfileStatusesChanged((s) => setStatuses(s))
+    const offCatalog = window.pob.onCatalogChanged(() => void refreshCatalog().catch(() => {}))
     return () => {
       offProfiles()
-      offOpen()
+      offStatuses()
+      offCatalog()
     }
-  }, [refresh])
+  }, [refresh, refreshCatalog])
 
   const createProfile = useCallback(
     async (input: ProfileInput) => {
       const profile = await unwrap(window.pob.createProfile(input))
-      notify('success', `Profile "${profile.name}" created`)
       await refresh()
       return profile
     },
-    [notify, refresh]
+    [refresh]
   )
 
   const updateProfile = useCallback(
     async (id: string, update: ProfileUpdate) => {
       const profile = await unwrap(window.pob.updateProfile(id, update))
-      notify('success', `Profile "${profile.name}" saved`)
       await refresh()
       return profile
     },
-    [notify, refresh]
+    [refresh]
   )
 
   const deleteProfile = useCallback(
     async (profile: Profile, clearData: boolean) => {
       await unwrap(window.pob.deleteProfile(profile.id, { clearData }))
-      notify('success', `Profile "${profile.name}" deleted`)
       await refresh()
     },
-    [notify, refresh]
+    [refresh]
   )
 
   const openProfile = useCallback(
@@ -102,25 +130,28 @@ export function useAppData() {
     [notify]
   )
 
-  const saveSettings = useCallback(
-    async (update: Partial<AppSettings>) => {
-      const next = await unwrap(window.pob.updateSettings(update))
-      setSettings(next)
-      notify('success', 'Settings saved')
-      return next
-    },
-    [notify]
-  )
+  const saveSettings = useCallback(async (update: Partial<AppSettings>) => {
+    const next = await unwrap(window.pob.updateSettings(update))
+    setSettings(next)
+    return next
+  }, [])
+
+  const runningCount = Object.values(statuses).filter((s) => s !== 'closed').length
 
   return {
     profiles,
-    openIds,
+    groups,
+    tags,
+    templates,
+    statuses,
+    runningCount,
     settings,
     loading,
     loadError,
     toasts,
     notify,
     refresh,
+    refreshCatalog,
     createProfile,
     updateProfile,
     deleteProfile,

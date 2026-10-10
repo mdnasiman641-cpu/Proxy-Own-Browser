@@ -9,7 +9,10 @@ import {
   type ProxyTestResult
 } from '@shared/types'
 import { LIMITS, PROFILE_COLORS } from '@shared/validation'
+import type { ProfileGroup, ProfileTag } from '@shared/types'
 import { errorMessage, unwrap } from '../../common/ipc'
+import { useI18n } from '../i18n'
+import { GroupSelect, TagInput } from './Bits'
 import { ProxyTestResultView } from './ProxyTestResultView'
 
 interface ProfileFormProps {
@@ -19,10 +22,26 @@ interface ProfileFormProps {
   submitLabel: string
   onSubmit: (input: ProfileUpdate) => Promise<void>
   onCancel: () => void
+  groups?: ProfileGroup[]
+  tagSuggestions?: ProfileTag[]
+  /** Pre-selected group for a new profile (e.g. the group being filtered). */
+  defaultGroupId?: string | null
 }
 
-export function ProfileForm({ initial, mode = 'full', submitLabel, onSubmit, onCancel }: ProfileFormProps) {
+export function ProfileForm({
+  initial,
+  mode = 'full',
+  submitLabel,
+  onSubmit,
+  onCancel,
+  groups = [],
+  tagSuggestions = [],
+  defaultGroupId = null
+}: ProfileFormProps) {
+  const { t } = useI18n()
   const p = initial?.proxy
+  const [groupId, setGroupId] = useState<string | null>(initial ? initial.groupId : defaultGroupId)
+  const [tags, setTags] = useState<string[]>(initial?.tags ?? [])
   const [name, setName] = useState(initial?.name ?? '')
   const [notes, setNotes] = useState(initial?.notes ?? '')
   const [color, setColor] = useState(initial?.color ?? PROFILE_COLORS[0])
@@ -50,7 +69,7 @@ export function ProfileForm({ initial, mode = 'full', submitLabel, onSubmit, onC
   const applyPaste = (): void => {
     const parsed = parseProxyString(paste)
     if (!parsed) {
-      setError('Proxy not recognised. Use host:port, host:port:user:pass or scheme://user:pass@host:port')
+      setError(t('form.pasteError'))
       return
     }
     setProxyEnabled(true)
@@ -118,7 +137,7 @@ export function ProfileForm({ initial, mode = 'full', submitLabel, onSubmit, onC
       await onSubmit(
         mode === 'proxy'
           ? { proxy }
-          : { name: name.trim(), notes, color, startUrl: startUrl.trim() || null, proxy }
+          : { name: name.trim(), notes, color, startUrl: startUrl.trim() || null, proxy, groupId, tags }
       )
     } catch (e) {
       setError(errorMessage(e))
@@ -131,19 +150,19 @@ export function ProfileForm({ initial, mode = 'full', submitLabel, onSubmit, onC
       {mode === 'full' && (
         <>
           <label className="field">
-            <span>Profile name</span>
+            <span>{t('form.name')}</span>
             <input
               value={name}
               onChange={(e) => setName(e.target.value)}
               maxLength={LIMITS.nameMax}
-              placeholder="e.g. Shop page — Facebook"
+              placeholder={t('form.namePlaceholder')}
               autoFocus
               required
             />
           </label>
           <div className="field">
-            <span>Color</span>
-            <div className="swatches" role="radiogroup" aria-label="Profile color">
+            <span>{t('form.color')}</span>
+            <div className="swatches" role="radiogroup" aria-label={t('form.colorLabel')}>
               {PROFILE_COLORS.map((c) => (
                 <button
                   key={c}
@@ -158,17 +177,21 @@ export function ProfileForm({ initial, mode = 'full', submitLabel, onSubmit, onC
               ))}
             </div>
           </div>
+          <div className="grid-2">
+            <GroupSelect groups={groups} value={groupId} onChange={setGroupId} />
+            <TagInput label={t('form.tags')} value={tags} onChange={setTags} suggestions={tagSuggestions} />
+          </div>
           <label className="field">
-            <span>Start page (optional)</span>
+            <span>{t('form.startPage')}</span>
             <input
               value={startUrl}
               onChange={(e) => setStartUrl(e.target.value)}
-              placeholder="https://… — leave empty to use the app homepage"
+              placeholder={t('form.startPagePlaceholder')}
               maxLength={LIMITS.urlMax}
             />
           </label>
           <label className="field">
-            <span>Notes (optional)</span>
+            <span>{t('form.notes')}</span>
             <textarea
               value={notes}
               onChange={(e) => setNotes(e.target.value)}
@@ -187,7 +210,7 @@ export function ProfileForm({ initial, mode = 'full', submitLabel, onSubmit, onC
               checked={proxyEnabled}
               onChange={(e) => setProxyEnabled(e.target.checked)}
             />
-            <span>Use a proxy for this profile</span>
+            <span>{t('form.useProxy')}</span>
           </label>
         </legend>
 
@@ -197,17 +220,17 @@ export function ProfileForm({ initial, mode = 'full', submitLabel, onSubmit, onC
               <input
                 value={paste}
                 onChange={(e) => setPaste(e.target.value)}
-                placeholder="Paste proxy: host:port:user:pass"
-                aria-label="Paste proxy string"
+                placeholder={t('form.pastePlaceholder')}
+                aria-label={t('form.pasteLabel')}
                 autoComplete="off"
               />
               <button type="button" className="button" onClick={applyPaste} disabled={!paste.trim()}>
-                Fill
+                {t('form.fill')}
               </button>
             </div>
             <div className="grid-3">
               <label className="field">
-                <span>Type</span>
+                <span>{t('form.type')}</span>
                 <select value={protocol} onChange={(e) => setProtocol(e.target.value as ProxyProtocol)}>
                   {PROXY_PROTOCOLS.map((value) => (
                     <option key={value} value={value}>
@@ -217,11 +240,11 @@ export function ProfileForm({ initial, mode = 'full', submitLabel, onSubmit, onC
                 </select>
               </label>
               <label className="field">
-                <span>Host</span>
+                <span>{t('form.host')}</span>
                 <input value={host} onChange={(e) => setHost(e.target.value)} placeholder="1.2.3.4" />
               </label>
               <label className="field">
-                <span>Port</span>
+                <span>{t('form.port')}</span>
                 <input
                   value={port}
                   onChange={(e) => setPort(e.target.value.replace(/[^0-9]/g, ''))}
@@ -231,14 +254,11 @@ export function ProfileForm({ initial, mode = 'full', submitLabel, onSubmit, onC
               </label>
             </div>
             {isSocks ? (
-              <p className="hint">
-                SOCKS proxies are used without a username/password — Chromium cannot authenticate to
-                SOCKS servers.
-              </p>
+              <p className="hint">{t('form.socksNote')}</p>
             ) : (
               <div className="grid-2">
                 <label className="field">
-                  <span>Username (optional)</span>
+                  <span>{t('form.username')}</span>
                   <input
                     value={username}
                     onChange={(e) => setUsername(e.target.value)}
@@ -246,12 +266,12 @@ export function ProfileForm({ initial, mode = 'full', submitLabel, onSubmit, onC
                   />
                 </label>
                 <label className="field">
-                  <span>Password</span>
+                  <span>{t('form.password')}</span>
                   <input
                     type="password"
                     value={password}
                     onChange={(e) => setPassword(e.target.value)}
-                    placeholder={hasStoredPassword ? 'Saved — leave empty to keep' : ''}
+                    placeholder={hasStoredPassword ? t('form.passwordSaved') : ''}
                     autoComplete="new-password"
                   />
                   {p?.hasPassword && (
@@ -261,14 +281,14 @@ export function ProfileForm({ initial, mode = 'full', submitLabel, onSubmit, onC
                         checked={clearPassword}
                         onChange={(e) => setClearPassword(e.target.checked)}
                       />
-                      <span>Remove saved password</span>
+                      <span>{t('form.removePassword')}</span>
                     </label>
                   )}
                 </label>
               </div>
             )}
             <label className="field">
-              <span>Bypass list (optional)</span>
+              <span>{t('form.bypass')}</span>
               <input
                 value={bypass}
                 onChange={(e) => setBypass(e.target.value)}
@@ -283,17 +303,15 @@ export function ProfileForm({ initial, mode = 'full', submitLabel, onSubmit, onC
                 disabled={testing || busy}
                 data-testid="test-proxy"
               >
-                {testing ? 'Testing…' : 'Test proxy'}
+                {testing ? t('form.testing') : t('form.testProxy')}
               </button>
-              <span className="hint">
-                Connects through this proxy to a public IP-check service. Works before saving.
-              </span>
+              <span className="hint">{t('form.testHint')}</span>
             </div>
             {currentTest?.result && <ProxyTestResultView result={currentTest.result} />}
             {currentTest?.error && <div className="alert error">{currentTest.error}</div>}
           </>
         ) : (
-          <p className="hint">This profile connects directly without a proxy.</p>
+          <p className="hint">{t('form.directNote')}</p>
         )}
       </fieldset>
 
@@ -305,10 +323,10 @@ export function ProfileForm({ initial, mode = 'full', submitLabel, onSubmit, onC
 
       <div className="form-actions">
         <button type="button" className="button" onClick={onCancel} disabled={busy}>
-          Cancel
+          {t('common.cancel')}
         </button>
         <button type="submit" className="button primary" disabled={busy}>
-          {busy ? 'Saving…' : submitLabel}
+          {busy ? t('common.saving') : submitLabel}
         </button>
       </div>
     </form>
