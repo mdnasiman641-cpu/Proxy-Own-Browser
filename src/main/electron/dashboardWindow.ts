@@ -1,6 +1,6 @@
 import { BrowserWindow } from 'electron'
 import type { Logger } from '../services/logger'
-import { loadPage, lockDownAppContents, preloadPath } from './pages'
+import { appWebPreferences, loadPage, lockDownAppContents } from './pages'
 
 export function createDashboardWindow(logger: Logger): BrowserWindow {
   const window = new BrowserWindow({
@@ -12,14 +12,7 @@ export function createDashboardWindow(logger: Logger): BrowserWindow {
     title: 'Proxy Own Browser',
     backgroundColor: '#f5f6f8',
     autoHideMenuBar: true,
-    webPreferences: {
-      preload: preloadPath(),
-      contextIsolation: true,
-      nodeIntegration: false,
-      sandbox: true,
-      webSecurity: true,
-      spellcheck: false
-    }
+    webPreferences: appWebPreferences('dashboard')
   })
   lockDownAppContents(window.webContents)
   window.once('ready-to-show', () => window.show())

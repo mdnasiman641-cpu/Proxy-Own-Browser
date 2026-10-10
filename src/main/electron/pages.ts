@@ -1,6 +1,12 @@
 import { join } from 'node:path'
 import { pathToFileURL } from 'node:url'
-import { app, type BrowserWindow, type WebContents, type WebFrameMain } from 'electron'
+import {
+  app,
+  type BrowserWindow,
+  type WebContents,
+  type WebFrameMain,
+  type WebPreferences
+} from 'electron'
 
 export type AppPage = 'dashboard' | 'browser'
 
@@ -12,9 +18,20 @@ function devServerUrl(): string | null {
     : null
 }
 
-/** Preload shared by the app's own pages; it exposes only the API matching each page. */
-export function preloadPath(): string {
-  return join(__dirname, '../preload/index.js')
+/**
+ * Locked-down webPreferences for the app's own pages. They share one preload, which reads
+ * `--pob-page` to expose only the API that page needs.
+ */
+export function appWebPreferences(page: AppPage): WebPreferences {
+  return {
+    preload: join(__dirname, '../preload/index.js'),
+    additionalArguments: [`--pob-page=${page}`],
+    contextIsolation: true,
+    nodeIntegration: false,
+    sandbox: true,
+    webSecurity: true,
+    spellcheck: false
+  }
 }
 
 export function loadPage(window: BrowserWindow, page: AppPage): Promise<void> {

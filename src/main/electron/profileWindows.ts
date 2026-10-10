@@ -14,7 +14,7 @@ import { ValidationError } from '@shared/validation'
 import type { Logger } from '../services/logger'
 import type { ProfileService } from '../services/profileService'
 import type { SettingsService } from '../services/settingsService'
-import { loadPage, lockDownAppContents, preloadPath } from './pages'
+import { appWebPreferences, loadPage, lockDownAppContents } from './pages'
 import type { SessionManager } from './sessionManager'
 
 /** Height of the toolbar page (address bar) at the top of a profile window, in DIPs. */
@@ -102,14 +102,7 @@ export class ProfileWindowManager {
       title: `${profile.name} — Proxy Own Browser`,
       backgroundColor: '#ffffff',
       autoHideMenuBar: true,
-      webPreferences: {
-        preload: preloadPath(),
-        contextIsolation: true,
-        nodeIntegration: false,
-        sandbox: true,
-        webSecurity: true,
-        spellcheck: false
-      }
+      webPreferences: appWebPreferences('browser')
     })
     lockDownAppContents(window.webContents)
 
