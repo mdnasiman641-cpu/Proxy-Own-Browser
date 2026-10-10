@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState, type FormEvent } from 'react'
 import type { NavigationState } from '@shared/types'
 import { Icon } from '../common/Icon'
+import { TabStrip } from './TabStrip'
 
 const EMPTY: NavigationState = {
   url: '',
@@ -11,7 +12,9 @@ const EMPTY: NavigationState = {
   error: null,
   profileName: '',
   profileColor: '#2563eb',
-  proxyLabel: null
+  proxyLabel: null,
+  tabs: [],
+  activeTabId: null
 }
 
 export function Toolbar() {
@@ -50,7 +53,15 @@ export function Toolbar() {
   const secure = state.url.startsWith('https://')
 
   return (
-    <div className="toolbar" style={{ ['--profile-color' as string]: state.profileColor }}>
+    <div className="chrome" style={{ ['--profile-color' as string]: state.profileColor }}>
+      <TabStrip
+        tabs={state.tabs}
+        activeTabId={state.activeTabId}
+        onActivate={(id) => void api.activateTab(id)}
+        onClose={(id) => void api.closeTab(id)}
+        onNew={() => void api.newTab()}
+      />
+    <div className="toolbar">
       <div className="nav-buttons">
         <button type="button" title="Back (Alt+←)" aria-label="Back" disabled={!state.canGoBack} onClick={() => void api.back()}>
           <Icon name="back" />
@@ -121,6 +132,7 @@ export function Toolbar() {
       </div>
 
       <div className={`progress ${state.isLoading ? 'active' : ''}`} aria-hidden="true" />
+    </div>
     </div>
   )
 }

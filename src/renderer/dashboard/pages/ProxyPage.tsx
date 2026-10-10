@@ -1,14 +1,33 @@
-import { useState } from 'react'
+import { Fragment, useState } from 'react'
 import { describeProxy } from '@shared/proxy'
-import type { Profile } from '@shared/types'
+import type { Profile, ProxyTestResult } from '@shared/types'
+import { errorMessage, unwrap } from '../../common/ipc'
 import { Modal } from '../components/Modal'
 import { ProfileAvatar } from '../components/ProfileBadge'
 import { ProfileForm } from '../components/ProfileForm'
+import { ProxyTestResultView } from '../components/ProxyTestResultView'
 import type { AppData } from '../useAppData'
 
 export function ProxyPage({ data }: { data: AppData }) {
   const [editing, setEditing] = useState<Profile | null>(null)
+  const [tests, setTests] = useState<
+    Record<string, { running: boolean; result?: ProxyTestResult; error?: string; savedAt: string }>
+  >({})
   const openSet = new Set(data.openIds)
+
+  /** Tests the saved proxy of a profile with a real request. */
+  const runTest = async (profile: Profile): Promise<void> => {
+    setTests((t) => ({ ...t, [profile.id]: { running: true, savedAt: profile.updatedAt } }))
+    try {
+      const result = await unwrap(window.pob.testProxy(profile.id))
+      setTests((t) => ({ ...t, [profile.id]: { running: false, result, savedAt: profile.updatedAt } }))
+    } catch (e) {
+      setTests((t) => ({
+        ...t,
+        [profile.id]: { running: false, error: errorMessage(e), savedAt: profile.updatedAt }
+      }))
+    }
+  }
 
   return (
     <section className="page">
@@ -42,8 +61,12 @@ export function ProxyPage({ data }: { data: AppData }) {
               </tr>
             </thead>
             <tbody>
-              {data.profiles.map((profile) => (
-                <tr key={profile.id}>
+              {data.profiles.map((profile) => {
+                // A result is only shown while it still describes the saved settings.
+                const test = tests[profile.id]?.savedAt === profile.updatedAt ? tests[profile.id] : undefined
+                return (
+                <Fragment key={profile.id}>
+                <tr>
                   <td>
                     <div className="profile-cell">
                       <ProfileAvatar profile={profile} size={28} />
@@ -67,12 +90,33 @@ export function ProxyPage({ data }: { data: AppData }) {
                   </td>
                   <td className="muted">{profile.proxy?.bypassRules || '—'}</td>
                   <td className="actions-col">
-                    <button type="button" className="button small" onClick={() => setEditing(profile)}>
-                      Configure
-                    </button>
+                    <div className="row-actions">
+                      <button
+                        type="button"
+                        className="button small"
+                        disabled={test?.running}
+                        onClick={() => void runTest(profile)}
+                        data-testid={`test-proxy-${profile.id}`}
+                      >
+                        {test?.running ? 'Testing…' : 'Test'}
+                      </button>
+                      <button type="button" className="button small" onClick={() => setEditing(profile)}>
+                        Configure
+                      </button>
+                    </div>
                   </td>
                 </tr>
-              ))}
+                {(test?.result || test?.error) && (
+                  <tr className="result-row">
+                    <td colSpan={5}>
+                      {test.result && <ProxyTestResultView result={test.result} />}
+                      {test.error && <div className="alert error">{test.error}</div>}
+                    </td>
+                  </tr>
+                )}
+                </Fragment>
+                )
+              })}
             </tbody>
           </table>
         </div>
