@@ -15,14 +15,18 @@ import type {
   BackupImportResult,
   IpcResult,
   ProfileInput,
-  ProfileUpdate
+  ProfileUpdate,
+  ProxyInput
 } from '@shared/types'
 import {
   ValidationError,
   addressInputSchema,
   deleteOptionsSchema,
+  nullableProfileIdSchema,
+  optionalAddressSchema,
   parseOrThrow,
-  profileIdSchema
+  profileIdSchema,
+  tabIdSchema
 } from '@shared/validation'
 import { MAX_BACKUP_BYTES, createBackup, parseBackup } from '../services/backupService'
 import type { Logger } from '../services/logger'
@@ -31,6 +35,7 @@ import type { SecretCipher } from '../services/secretCipher'
 import type { SettingsService } from '../services/settingsService'
 import { isAppFrame } from './pages'
 import type { ProfileWindow, ProfileWindowManager } from './profileWindows'
+import type { ProxyTester } from './proxyTester'
 import type { SessionManager } from './sessionManager'
 
 export interface IpcDeps {
@@ -39,6 +44,7 @@ export interface IpcDeps {
   sessions: SessionManager
   windows: ProfileWindowManager
   cipher: SecretCipher
+  proxyTester: ProxyTester
   logger: Logger
   getDashboard: () => BrowserWindow | null
   notifyProfilesChanged: () => void
@@ -122,8 +128,8 @@ export function registerIpcHandlers(deps: IpcDeps): void {
   })
 
   dashboard(DashboardChannels.openProfile, async (id) => {
-    await windows.open(parseOrThrow(profileIdSchema, id))
-    deps.notifyProfilesChanged()
+    const outcome = await windows.open(parseOrThrow(profileIdSchema, id))
+    if (outcome === 'opened') deps.notifyProfilesChanged()
   })
 
   dashboard(DashboardChannels.closeProfile, (id) => {
@@ -202,22 +208,31 @@ export function registerIpcHandlers(deps: IpcDeps): void {
     if (error) throw new ValidationError(`Could not open the data folder: ${error}`)
   })
 
+  dashboard(DashboardChannels.testProxy, (id, draft) => {
+    const profileId = parseOrThrow(nullableProfileIdSchema, id ?? null)
+    const target = profiles.resolveProxyTestTarget(profileId, draft as ProxyInput | undefined)
+    const key = `${draft ? 'draft' : 'saved'}-${profileId ?? 'new'}`
+    return deps.proxyTester.test(key, target)
+  })
+
+  dashboard(DashboardChannels.resourceUsage, () => windows.resourceUsage())
+
   toolbar(BrowserChannels.getState, (entry) => windows.state(entry))
   toolbar(BrowserChannels.navigate, (entry, input) => {
     windows.navigate(entry, parseOrThrow(addressInputSchema, input))
   })
-  toolbar(BrowserChannels.back, (entry) => {
-    const history = entry.view.webContents.navigationHistory
-    if (history.canGoBack()) history.goBack()
-  })
-  toolbar(BrowserChannels.forward, (entry) => {
-    const history = entry.view.webContents.navigationHistory
-    if (history.canGoForward()) history.goForward()
-  })
-  toolbar(BrowserChannels.reload, (entry) => {
-    entry.error = null
-    entry.view.webContents.reload()
-  })
-  toolbar(BrowserChannels.stop, (entry) => entry.view.webContents.stop())
+  toolbar(BrowserChannels.back, (entry) => windows.back(entry))
+  toolbar(BrowserChannels.forward, (entry) => windows.forward(entry))
+  toolbar(BrowserChannels.reload, (entry) => windows.reload(entry))
+  toolbar(BrowserChannels.stop, (entry) => windows.stop(entry))
   toolbar(BrowserChannels.home, (entry) => windows.goHome(entry))
+  toolbar(BrowserChannels.newTab, (entry, input) => {
+    windows.newTab(entry, parseOrThrow(optionalAddressSchema, input ?? undefined))
+  })
+  toolbar(BrowserChannels.closeTab, (entry, tabId) => {
+    windows.closeTab(entry, parseOrThrow(tabIdSchema, tabId))
+  })
+  toolbar(BrowserChannels.activateTab, (entry, tabId) => {
+    windows.activateTab(entry, parseOrThrow(tabIdSchema, tabId))
+  })
 }

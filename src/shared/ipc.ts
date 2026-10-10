@@ -8,7 +8,10 @@ import type {
   NavigationState,
   Profile,
   ProfileInput,
-  ProfileUpdate
+  ProfileUpdate,
+  ProxyInput,
+  ProxyTestResult,
+  ResourceUsage
 } from './types'
 
 /** Invoke channels callable from the dashboard window. */
@@ -25,7 +28,9 @@ export const DashboardChannels = {
   exportBackup: 'backup:export',
   importBackup: 'backup:import',
   appInfo: 'app:info',
-  openDataFolder: 'app:open-data-folder'
+  openDataFolder: 'app:open-data-folder',
+  testProxy: 'proxy:test',
+  resourceUsage: 'app:resource-usage'
 } as const
 
 /** Invoke channels callable from a profile window toolbar. */
@@ -36,7 +41,10 @@ export const BrowserChannels = {
   forward: 'nav:forward',
   reload: 'nav:reload',
   stop: 'nav:stop',
-  home: 'nav:home'
+  home: 'nav:home',
+  newTab: 'tabs:new',
+  closeTab: 'tabs:close',
+  activateTab: 'tabs:activate'
 } as const
 
 /** Events pushed from the main process to renderers. */
@@ -61,6 +69,12 @@ export interface DashboardApi {
   importBackup(): Promise<IpcResult<BackupImportResult>>
   appInfo(): Promise<IpcResult<AppInfo>>
   openDataFolder(): Promise<IpcResult<void>>
+  /**
+   * Makes a real request through a proxy. Pass only `profileId` to test the saved proxy,
+   * or a `draft` to test unsaved form values (profileId may be null for a new profile).
+   */
+  testProxy(profileId: string | null, draft?: ProxyInput): Promise<IpcResult<ProxyTestResult>>
+  resourceUsage(): Promise<IpcResult<ResourceUsage>>
   onProfilesChanged(listener: () => void): () => void
   onOpenProfilesChanged(listener: (ids: string[]) => void): () => void
 }
@@ -73,6 +87,9 @@ export interface BrowserApi {
   reload(): Promise<IpcResult<void>>
   stop(): Promise<IpcResult<void>>
   home(): Promise<IpcResult<void>>
+  newTab(input?: string): Promise<IpcResult<void>>
+  closeTab(tabId: string): Promise<IpcResult<void>>
+  activateTab(tabId: string): Promise<IpcResult<void>>
   onState(listener: (state: NavigationState) => void): () => void
   onFocusAddressBar(listener: () => void): () => void
 }
