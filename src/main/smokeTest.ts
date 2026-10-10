@@ -6,7 +6,7 @@ import type { ProxyTestResult } from '@shared/types'
 import type { Logger } from './services/logger'
 import type { ProfileService } from './services/profileService'
 import type { ProfileWindowManager } from './electron/profileWindows'
-import type { ProxyTester } from './electron/proxyTester'
+import { ProxyTester } from './electron/proxyTester'
 import type { SessionManager } from './electron/sessionManager'
 
 /**
@@ -88,9 +88,9 @@ function httpJson(url: string): Promise<Record<string, number>> {
 }
 
 export async function runSmokeTest(ctx: SmokeContext): Promise<void> {
-  const checks: { name: string; passed: boolean; detail?: string }[] = []
-  const check = (name: string, passed: boolean, detail?: string): void => {
-    checks.push({ name, passed, ...(detail ? { detail } : {}) })
+  const checks: { name: string; passed: boolean; optional?: boolean; detail?: string }[] = []
+  const check: Check = (name, passed, detail, optional) => {
+    checks.push({ name, passed, ...(optional ? { optional } : {}), ...(detail ? { detail } : {}) })
   }
   const fixtures = process.env.POB_SMOKE_FIXTURES
     ? (JSON.parse(process.env.POB_SMOKE_FIXTURES) as Fixtures)
@@ -130,14 +130,15 @@ export async function runSmokeTest(ctx: SmokeContext): Promise<void> {
     check('no unexpected errors', false, error instanceof Error ? error.message : String(error))
   }
 
-  const passed = checks.every((c) => c.passed)
+  // Optional checks depend on the internet; they are reported but cannot fail the run.
+  const passed = checks.every((c) => c.passed || c.optional)
   writeFileSync(ctx.resultFile, JSON.stringify({ stage: ctx.stage, passed, checks }, null, 2))
   ctx.logger.info(`Smoke test stage ${ctx.stage}: ${passed ? 'passed' : 'FAILED'}`)
   ctx.windows.closeAll()
   setTimeout(() => app.quit(), 300)
 }
 
-type Check = (name: string, passed: boolean, detail?: string) => void
+type Check = (name: string, passed: boolean, detail?: string, optional?: boolean) => void
 
 async function setupStage(ctx: SmokeContext, check: Check, fixtures: Fixtures | null): Promise<void> {
   check('starts with no profiles', ctx.profiles.count() === 0)
@@ -377,6 +378,15 @@ async function proxyChecks(ctx: SmokeContext, check: Check, f: Fixtures): Promis
 
   const log = readFileSync(join(app.getPath('userData'), 'logs', 'app.log'), 'utf8')
   check('proxy credentials are not written to the log', !log.includes(f.pass) && !log.includes(f.user))
+
+  // The real public IP-check services the app uses, over a direct connection.
+  const real = await new ProxyTester(ctx.logger).test('smoke-public', { proxy: null, credentials: null })
+  check(
+    'public IP-check services reachable (internet)',
+    real.ok && real.ip !== null,
+    `${summary(real)} via ${real.endpoint ?? 'n/a'}`,
+    true
+  )
 
   for (const id of [ok, wrong, missing, closed, blackhole, challenge, direct]) ctx.profiles.delete(id)
 }

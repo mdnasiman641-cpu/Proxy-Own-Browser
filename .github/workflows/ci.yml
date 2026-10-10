@@ -61,7 +61,12 @@ jobs:
             [ -f "$f" ] || continue
             level=notice
             grep -qiE "error|fail|✗|×" "$f" && level=warning
-            body=$(tail -n 45 "$f" | sed -e 's/\x1b\[[0-9;]*m//g' | sed -e 's/%/%25/g' | awk '{printf "%s%%0A", $0}')
+            if [ "$f" = ci-smoke.log ]; then
+              body=$(grep -E '^\[smoke\]' "$f" | tail -n 90)   # every check result
+            else
+              body=$(tail -n 45 "$f")
+            fi
+            body=$(printf '%s\n' "$body" | sed -e 's/\x1b\[[0-9;]*m//g' | sed -e 's/%/%25/g' | awk '{printf "%s%%0A", $0}')
             echo "::${level} title=${f}::${body}"
           done
 

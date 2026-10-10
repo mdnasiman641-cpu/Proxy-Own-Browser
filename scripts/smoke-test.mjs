@@ -43,7 +43,8 @@ for (const stage of ['setup', 'verify']) {
   }
   const result = JSON.parse(readFileSync(resultFile, 'utf8'))
   for (const c of result.checks) {
-    console.log(`[smoke] ${stage}: ${c.passed ? 'PASS' : 'FAIL'} ${c.name}${c.detail ? ` — ${c.detail}` : ''}`)
+    const label = c.passed ? 'PASS' : c.optional ? 'WARN' : 'FAIL'
+    console.log(`[smoke] ${stage}: ${label} ${c.name}${c.optional ? ' (optional)' : ''}${c.detail ? ` — ${c.detail}` : ''}`)
   }
   if (!result.passed) {
     failed = true
