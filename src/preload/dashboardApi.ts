@@ -1,5 +1,6 @@
 import { ipcRenderer } from 'electron'
 import { DashboardChannels as C, Events, type DashboardApi } from '@shared/ipc'
+import type { ProfileRuntimeStatus } from '@shared/types'
 import { subscribe } from './subscribe'
 
 // Only these narrow functions are exposed to the page — never ipcRenderer itself.
@@ -19,6 +20,31 @@ export const dashboardApi: DashboardApi = {
   openDataFolder: () => ipcRenderer.invoke(C.openDataFolder),
   testProxy: (profileId, draft) => ipcRenderer.invoke(C.testProxy, profileId, draft),
   resourceUsage: () => ipcRenderer.invoke(C.resourceUsage),
+  profileStatuses: () => ipcRenderer.invoke(C.profileStatuses),
+  listGroups: () => ipcRenderer.invoke(C.listGroups),
+  createGroup: (input) => ipcRenderer.invoke(C.createGroup, input),
+  updateGroup: (id, input) => ipcRenderer.invoke(C.updateGroup, id, input),
+  deleteGroup: (id) => ipcRenderer.invoke(C.deleteGroup, id),
+  listTags: () => ipcRenderer.invoke(C.listTags),
+  createTag: (name) => ipcRenderer.invoke(C.createTag, name),
+  renameTag: (id, name) => ipcRenderer.invoke(C.renameTag, id, name),
+  deleteTag: (id) => ipcRenderer.invoke(C.deleteTag, id),
+  listTemplates: () => ipcRenderer.invoke(C.listTemplates),
+  createTemplate: (input) => ipcRenderer.invoke(C.createTemplate, input),
+  updateTemplate: (id, input) => ipcRenderer.invoke(C.updateTemplate, id, input),
+  duplicateTemplate: (id) => ipcRenderer.invoke(C.duplicateTemplate, id),
+  deleteTemplate: (id) => ipcRenderer.invoke(C.deleteTemplate, id),
+  planBulkCreate: (spec) => ipcRenderer.invoke(C.planBulkCreate, spec),
+  bulkCreate: (spec, names) => ipcRenderer.invoke(C.bulkCreate, spec, names),
+  bulkOpen: (ids) => ipcRenderer.invoke(C.bulkOpen, ids),
+  bulkClose: (ids) => ipcRenderer.invoke(C.bulkClose, ids),
+  bulkAssignGroup: (ids, groupId) => ipcRenderer.invoke(C.bulkAssignGroup, ids, groupId),
+  bulkChangeTags: (ids, change) => ipcRenderer.invoke(C.bulkChangeTags, ids, change),
+  bulkExport: (ids) => ipcRenderer.invoke(C.bulkExport, ids),
+  bulkDelete: (ids, scope) => ipcRenderer.invoke(C.bulkDelete, ids, scope),
+  onProfileStatusesChanged: (listener) =>
+    subscribe<Record<string, ProfileRuntimeStatus>>(Events.profileStatusesChanged, listener),
+  onCatalogChanged: (listener) => subscribe(Events.catalogChanged, () => listener()),
   onProfilesChanged: (listener) => subscribe(Events.profilesChanged, () => listener()),
   onOpenProfilesChanged: (listener) => subscribe<string[]>(Events.openProfilesChanged, listener)
 }

@@ -1,10 +1,9 @@
-import { rm } from 'node:fs/promises'
-import { join } from 'node:path'
 import { session, type Session } from 'electron'
 import { buildProxyRules, describeProxy } from '@shared/proxy'
 import { isProfilePartition, partitionDirectoryName } from '@shared/partition'
 import type { Profile } from '@shared/types'
 import type { Logger } from '../services/logger'
+import { removeManagedPartitionDir } from '../services/managedPaths'
 
 /** Permissions web pages may use without asking. Everything else is denied in Phase 1. */
 const ALLOWED_PERMISSIONS = new Set(['fullscreen', 'clipboard-sanitized-write', 'pointerLock'])
@@ -87,8 +86,14 @@ export class SessionManager {
     await Promise.all([...this.known.keys()].map((p) => this.flush(p)))
   }
 
-  /** Wipes all browsing data of a (deleted) profile. Best effort — failures are logged. */
-  async clearData(partition: string): Promise<void> {
+  /**
+   * Wipes the browsing data of a (deleted) profile: first through Chromium (cookies, storage,
+   * cache), then by removing that profile's own partition folder. Only
+   * `<userData>/Partitions/profile-<uuid>` of this profile is ever deleted (see managedPaths.ts).
+   * Returns false if some data could not be removed (it is logged).
+   */
+  async clearData(partition: string): Promise<boolean> {
+    let complete = true
     try {
       const ses = this.sessionFor(partition)
       await ses.clearStorageData()
@@ -96,17 +101,19 @@ export class SessionManager {
       await ses.clearAuthCache()
       await ses.cookies.flushStore()
     } catch (error) {
+      complete = false
       this.logger.warn('Could not clear profile session data', error)
     }
     this.known.delete(partition)
     this.configured.delete(partition)
-    const dir = join(this.userDataPath, 'Partitions', partitionDirectoryName(partition))
     try {
-      await rm(dir, { recursive: true, force: true, maxRetries: 3 })
-    } catch {
-      // Chromium may still hold files open; they are already empty and unreachable.
-      this.logger.warn(`Partition folder will be left on disk: ${partitionDirectoryName(partition)}`)
+      await removeManagedPartitionDir(this.userDataPath, partition)
+    } catch (error) {
+      // Chromium may still hold files open; they are already emptied above.
+      complete = false
+      this.logger.warn(`Partition folder will be left on disk: ${partitionDirectoryName(partition)}`, error)
     }
+    return complete
   }
 
   private applySecurityPolicy(ses: Session): void {

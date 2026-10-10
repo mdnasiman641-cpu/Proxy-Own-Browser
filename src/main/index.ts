@@ -1,11 +1,15 @@
 import { join } from 'node:path'
 import { app, BrowserWindow, dialog, type Session } from 'electron'
 import { Events } from '@shared/ipc'
+import { BulkCreator } from './services/bulkCreate'
+import { CatalogService } from './services/catalogService'
 import { AppDatabase } from './services/database'
 import { createFileLogger, type Logger } from './services/logger'
 import { ProfileRepository } from './services/profileRepository'
 import { ProfileService } from './services/profileService'
+import { MetadataBackupService } from './services/metadataBackup'
 import { SettingsService } from './services/settingsService'
+import { TemplateService } from './services/templateService'
 import { loadSqlJs } from './services/sqlite'
 import { createDashboardWindow } from './electron/dashboardWindow'
 import { ElectronSafeStorageCipher } from './electron/electronCipher'
@@ -54,14 +58,24 @@ async function start(): Promise<void> {
   logger.info(`Starting Proxy Own Browser ${app.getVersion()} (Electron ${process.versions.electron})`)
 
   const SQL = await loadSqlJs()
-  const { db, recoveredFrom } = AppDatabase.open(SQL, join(userData, 'data', 'profiles.sqlite'))
+  const { db, recoveredFrom, migratedFrom, preMigrationBackup } = AppDatabase.open(
+    SQL,
+    join(userData, 'data', 'profiles.sqlite')
+  )
   if (recoveredFrom) {
     logger.warn(`Database was unreadable and has been moved to ${recoveredFrom}`)
   }
+  if (migratedFrom !== undefined) {
+    logger.info(`Upgraded database from schema ${migratedFrom} to ${db.schemaVersion}; copy kept at ${preMigrationBackup}`)
+  }
 
   const cipher = new ElectronSafeStorageCipher()
-  const profiles = new ProfileService(new ProfileRepository(db), cipher)
+  const catalog = new CatalogService(db)
+  const profiles = new ProfileService(new ProfileRepository(db), cipher, { catalog })
   const settings = new SettingsService(db)
+  const templates = new TemplateService(db, catalog, profiles)
+  const bulkCreator = new BulkCreator(profiles, catalog, templates)
+  const backups = new MetadataBackupService(profiles, catalog, templates, settings)
   const sessions = new SessionManager(userData, logger)
   const proxyTester = new ProxyTester(logger, proxyTesterOptions())
 
@@ -73,7 +87,8 @@ async function start(): Promise<void> {
     settings,
     sessions,
     logger,
-    onOpenProfilesChanged: (ids) => broadcast(Events.openProfilesChanged, ids)
+    onOpenProfilesChanged: (ids) => broadcast(Events.openProfilesChanged, ids),
+    onStatusesChanged: (statuses) => broadcast(Events.profileStatusesChanged, statuses)
   })
 
   registerIpcHandlers({
@@ -83,9 +98,19 @@ async function start(): Promise<void> {
     windows,
     cipher,
     proxyTester,
+    catalog,
+    templates,
+    bulkCreator,
+    backups,
     logger,
     getDashboard: () => dashboard,
-    notifyProfilesChanged: () => broadcast(Events.profilesChanged)
+    notifyProfilesChanged: () => broadcast(Events.profilesChanged),
+    notifyCatalogChanged: () => broadcast(Events.catalogChanged)
+  })
+
+  // Diagnostics for background process failures (type, reason and exit code only).
+  app.on('child-process-gone', (_event, details) => {
+    logger.warn(`Background process gone: ${details.type} ${details.reason} (exit code ${details.exitCode})`)
   })
 
   // Answer proxy authentication challenges with the profile's own stored credentials.
@@ -146,6 +171,10 @@ async function start(): Promise<void> {
       sessions,
       windows,
       proxyTester,
+      catalog,
+      templates,
+      bulkCreator,
+      backups,
       getDashboard: () => dashboard,
       logger
     })
