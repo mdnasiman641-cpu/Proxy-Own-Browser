@@ -1,0 +1,36 @@
+appId: com.mdnasiman641.proxyownbrowser
+productName: Proxy Own Browser
+copyright: Copyright © 2026 mdnasiman641-cpu
+
+directories:
+  output: release/${version}
+  buildResources: build
+
+files:
+  - out/**/*
+  - package.json
+  - '!**/*.map'
+
+# sql.js is pure WebAssembly, so there are no native modules to rebuild.
+npmRebuild: false
+
+win:
+  target:
+    - target: nsis
+      arch: [x64]
+    - target: portable
+      arch: [x64]
+
+nsis:
+  oneClick: false
+  perMachine: false
+  allowToChangeInstallationDirectory: true
+  createDesktopShortcut: true
+  createStartMenuShortcut: true
+  shortcutName: Proxy Own Browser
+  artifactName: Proxy-Own-Browser-Setup-${version}.${ext}
+  # Keep profiles, cookies and settings when uninstalling unless the user removes them manually.
+  deleteAppDataOnUninstall: false
+
+portable:
+  artifactName: Proxy-Own-Browser-Portable-${version}.${ext}
