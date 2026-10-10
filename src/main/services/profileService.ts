@@ -1,6 +1,6 @@
 import { randomUUID } from 'node:crypto'
 import { partitionForProfile } from '@shared/partition'
-import type { Profile, ProfileInput, ProfileUpdate, ProxyConfig } from '@shared/types'
+import type { Profile, ProfileInput, ProfileUpdate, ProxyConfig, ProxyInput } from '@shared/types'
 import {
   LIMITS,
   PROFILE_COLORS,
@@ -9,10 +9,12 @@ import {
   profileIdSchema,
   profileInputSchema,
   profileUpdateSchema,
+  proxyInputSchema,
   searchQuerySchema,
   type ParsedProxyInput
 } from '@shared/validation'
 import type { ProfileRecord, ProfileRepository } from './profileRepository'
+import { canReuseStoredPassword } from './proxyTest'
 import type { SecretCipher } from './secretCipher'
 
 export class NotFoundError extends Error {
@@ -34,6 +36,12 @@ export interface PortableProfile {
   color: string
   startUrl: string | null
   proxy: Omit<ProxyConfig, 'hasPassword'> | null
+}
+
+/** What a proxy test should connect through. Credentials stay in the main process. */
+export interface ProxyTestTarget {
+  proxy: ProxyConfig | null
+  credentials: ProxyCredentials | null
 }
 
 export interface ImportSummary {
@@ -151,6 +159,44 @@ export class ProfileService {
     let password = ''
     if (record.proxyPassword) password = this.cipher.decrypt(record.proxyPassword)
     return { username: record.proxyUsername, password }
+  }
+
+  /**
+   * Resolves the proxy (and credentials) for a connection test.
+   * - No draft: the profile's saved proxy.
+   * - Draft (unsaved form values): those values. A saved password is reused only when the
+   *   draft points at the same proxy server and username; otherwise only a typed password is used.
+   */
+  resolveProxyTestTarget(profileId: string | null, draft?: ProxyInput): ProxyTestTarget {
+    const saved = profileId ? this.get(profileId) : null
+    if (!draft) {
+      if (!saved) throw new ValidationError('Choose a profile to test')
+      return { proxy: saved.proxy, credentials: this.getProxyCredentials(saved.id) }
+    }
+
+    const data = parseOrThrow(proxyInputSchema, draft)
+    if (!data.enabled) return { proxy: null, credentials: null }
+
+    const isSocks = data.protocol === 'socks4' || data.protocol === 'socks5'
+    const username = isSocks ? '' : (data.username?.trim() ?? '')
+    let password = ''
+    if (username) {
+      if (data.password) password = data.password
+      else if (data.password === undefined && saved && canReuseStoredPassword(saved.proxy, data)) {
+        password = this.getProxyCredentials(saved.id)?.password ?? ''
+      }
+    }
+    return {
+      proxy: {
+        protocol: data.protocol!,
+        host: data.host!,
+        port: data.port!,
+        username: username || null,
+        hasPassword: Boolean(password),
+        bypassRules: data.bypassRules ?? ''
+      },
+      credentials: username ? { username, password } : null
+    }
   }
 
   toPortable(profile: Profile): PortableProfile {

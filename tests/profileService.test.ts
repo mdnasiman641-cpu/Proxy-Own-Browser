@@ -186,3 +186,70 @@ describe('ProfileService — editing, deleting, searching', () => {
     expect(() => service.getProxyCredentials(p.id)).toThrow()
   })
 })
+
+describe('ProfileService — proxy test target', () => {
+  const savedProxy = {
+    enabled: true,
+    protocol: 'http' as const,
+    host: 'proxy.example.com',
+    port: 3128,
+    username: 'bob',
+    password: 'saved-pw'
+  }
+
+  it('uses the saved proxy and decrypted credentials when no draft is given', async () => {
+    const { service } = await createService()
+    const p = service.create({ name: 'P', proxy: savedProxy })
+    const target = service.resolveProxyTestTarget(p.id)
+    expect(target.proxy).toMatchObject({ protocol: 'http', host: 'proxy.example.com', port: 3128 })
+    expect(target.credentials).toEqual({ username: 'bob', password: 'saved-pw' })
+  })
+
+  it('tests a direct connection for a profile without a proxy', async () => {
+    const { service } = await createService()
+    const p = service.create({ name: 'Direct' })
+    expect(service.resolveProxyTestTarget(p.id)).toEqual({ proxy: null, credentials: null })
+  })
+
+  it('reuses the saved password only for a draft with the same server and username', async () => {
+    const { service } = await createService()
+    const p = service.create({ name: 'P', proxy: savedProxy })
+    const { password: _omit, ...draft } = savedProxy
+
+    expect(service.resolveProxyTestTarget(p.id, draft).credentials?.password).toBe('saved-pw')
+    expect(service.resolveProxyTestTarget(p.id, { ...draft, host: 'other.example.com' }).credentials).toEqual({
+      username: 'bob',
+      password: ''
+    })
+    expect(service.resolveProxyTestTarget(p.id, { ...draft, port: 9999 }).credentials?.password).toBe('')
+  })
+
+  it('uses a typed password, and treats an empty password as "no password"', async () => {
+    const { service } = await createService()
+    const p = service.create({ name: 'P', proxy: savedProxy })
+    expect(service.resolveProxyTestTarget(p.id, { ...savedProxy, password: 'typed' }).credentials?.password).toBe(
+      'typed'
+    )
+    expect(service.resolveProxyTestTarget(p.id, { ...savedProxy, password: '' }).credentials?.password).toBe('')
+  })
+
+  it('tests drafts for new (unsaved) profiles without any stored secrets', async () => {
+    const { service } = await createService()
+    const target = service.resolveProxyTestTarget(null, {
+      enabled: true,
+      protocol: 'socks5',
+      host: '10.0.0.1',
+      port: 1080
+    })
+    expect(target.proxy?.protocol).toBe('socks5')
+    expect(target.credentials).toBeNull()
+  })
+
+  it('validates drafts before testing', async () => {
+    const { service } = await createService()
+    expect(() => service.resolveProxyTestTarget(null, { enabled: true, protocol: 'http', host: 'bad host', port: 80 })).toThrow(
+      ValidationError
+    )
+    expect(() => service.resolveProxyTestTarget(null)).toThrow(/Choose a profile/)
+  })
+})
