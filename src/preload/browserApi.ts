@@ -1,16 +1,11 @@
-import { contextBridge, ipcRenderer, type IpcRendererEvent } from 'electron'
+import { ipcRenderer } from 'electron'
 import { BrowserChannels as C, Events, type BrowserApi } from '@shared/ipc'
+import { subscribe } from './subscribe'
 import type { NavigationState } from '@shared/types'
-
-function subscribe<T>(channel: string, listener: (payload: T) => void): () => void {
-  const handler = (_event: IpcRendererEvent, payload: T): void => listener(payload)
-  ipcRenderer.on(channel, handler)
-  return () => ipcRenderer.removeListener(channel, handler)
-}
 
 // Exposed only to the toolbar page of a profile window. Website content runs in a
 // separate WebContentsView with no preload and cannot reach these functions.
-const api: BrowserApi = {
+export const browserApi: BrowserApi = {
   getState: () => ipcRenderer.invoke(C.getState),
   navigate: (input) => ipcRenderer.invoke(C.navigate, input),
   back: () => ipcRenderer.invoke(C.back),
@@ -21,5 +16,3 @@ const api: BrowserApi = {
   onState: (listener) => subscribe<NavigationState>(Events.navigationState, listener),
   onFocusAddressBar: (listener) => subscribe(Events.focusAddressBar, () => listener())
 }
-
-contextBridge.exposeInMainWorld('pobBrowser', api)

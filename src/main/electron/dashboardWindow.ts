@@ -13,7 +13,7 @@ export function createDashboardWindow(logger: Logger): BrowserWindow {
     backgroundColor: '#f5f6f8',
     autoHideMenuBar: true,
     webPreferences: {
-      preload: preloadPath('dashboard'),
+      preload: preloadPath(),
       contextIsolation: true,
       nodeIntegration: false,
       sandbox: true,

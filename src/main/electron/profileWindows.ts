@@ -103,7 +103,7 @@ export class ProfileWindowManager {
       backgroundColor: '#ffffff',
       autoHideMenuBar: true,
       webPreferences: {
-        preload: preloadPath('browser'),
+        preload: preloadPath(),
         contextIsolation: true,
         nodeIntegration: false,
         sandbox: true,

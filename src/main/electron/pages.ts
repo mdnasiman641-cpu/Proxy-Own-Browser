@@ -12,8 +12,9 @@ function devServerUrl(): string | null {
     : null
 }
 
-export function preloadPath(page: AppPage): string {
-  return join(__dirname, `../preload/${page}.js`)
+/** Preload shared by the app's own pages; it exposes only the API matching each page. */
+export function preloadPath(): string {
+  return join(__dirname, '../preload/index.js')
 }
 
 export function loadPage(window: BrowserWindow, page: AppPage): Promise<void> {
