@@ -63,6 +63,10 @@ export async function runSmokeTest(ctx: SmokeContext): Promise<void> {
     if (dashboard) {
       await waitForLoad(dashboard.webContents)
       check('dashboard renders', await pageHas(dashboard.webContents, '[data-testid="app-shell"]'))
+      check(
+        'dashboard preload API available',
+        await dashboard.webContents.executeJavaScript(`typeof window.pob?.listProfiles === 'function'`)
+      )
     } else {
       check('dashboard renders', false, 'no dashboard window')
     }
@@ -89,6 +93,19 @@ export async function runSmokeTest(ctx: SmokeContext): Promise<void> {
       }
       check('concurrent window limit enforced (default 2)', limited)
       ctx.profiles.delete(c.id)
+
+      const toolbarA = ctx.windows.toolbarContents(a.id)
+      let toolbarName = ''
+      if (toolbarA) {
+        await waitForLoad(toolbarA)
+        for (let i = 0; i < 50 && toolbarName !== 'Smoke A'; i++) {
+          toolbarName = await toolbarA.executeJavaScript(
+            `document.querySelector('.profile-info .name')?.textContent ?? ''`
+          )
+          if (toolbarName !== 'Smoke A') await new Promise((r) => setTimeout(r, 200))
+        }
+      }
+      check('toolbar receives profile state over IPC', toolbarName === 'Smoke A', toolbarName)
 
       const viewA = ctx.windows.sessionContents(a.id)
       check('profile A web view uses its own session', viewA?.session === ctx.sessions.sessionFor(a.partition))

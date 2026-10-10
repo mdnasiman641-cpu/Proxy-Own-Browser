@@ -32,6 +32,10 @@ export default defineConfig({
   preload: {
     resolve: { alias: sharedAlias },
     build: {
+      // Sandboxed preloads cannot require() sibling chunk files, so each preload
+      // must be bundled into a single self-contained file.
+      isolatedEntries: true,
+      externalizeDeps: false,
       rollupOptions: {
         input: {
           dashboard: resolve('src/preload/dashboard.ts'),

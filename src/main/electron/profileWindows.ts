@@ -63,6 +63,10 @@ export class ProfileWindowManager {
     return this.windows.get(profileId)?.view.webContents
   }
 
+  toolbarContents(profileId: string): WebContents | undefined {
+    return this.windows.get(profileId)?.window.webContents
+  }
+
   /** Finds the profile window whose toolbar sent an IPC message. */
   findByToolbar(sender: WebContents): ProfileWindow | undefined {
     for (const entry of this.windows.values()) {
