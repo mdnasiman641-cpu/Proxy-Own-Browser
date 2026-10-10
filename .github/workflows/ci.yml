@@ -31,6 +31,9 @@ jobs:
       - name: Typecheck
         run: npm run typecheck 2>&1 | tee ci-typecheck.log; exit ${PIPESTATUS[0]}
 
+      - name: Lint
+        run: npm run lint 2>&1 | tee ci-lint.log; exit ${PIPESTATUS[0]}
+
       - name: Unit tests
         run: npm test 2>&1 | tee ci-test.log; exit ${PIPESTATUS[0]}
 
