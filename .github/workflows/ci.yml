@@ -19,11 +19,14 @@ jobs:
     runs-on: windows-latest
     timeout-minutes: 40
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@v5
         with:
           node-version: 22
+
+      - name: Update npm
+        run: npm install -g npm@11 --no-audit --no-fund
 
       - name: Install dependencies
         run: npm install --no-audit --no-fund 2>&1 | tee ci-install.log; exit ${PIPESTATUS[0]}
