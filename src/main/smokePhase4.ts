@@ -100,7 +100,9 @@ export async function phase4SetupChecks(ctx: SmokeContext, check: Check, f: Fixt
   // ---- a failing proxy never falls back to a direct connection ----
   const dead = ctx.profiles.create({
     name: 'Smoke dead proxy',
-    proxy: { enabled: true, protocol: 'http', host: '127.0.0.1', port: f.closedPort, bypassRules: '<-loopback>' }
+    proxy: { enabled: true, protocol: 'http', host: '127.0.0.1', port: f.closedPort, bypassRules: '<-loopback>' },
+    // Opened on purpose with a dead proxy, so it must not wait for the automatic time zone.
+    browser: { timezoneMode: 'off' }
   })
   await ctx.windows.open(dead.id, { initialUrl: `${f.echoBase}/page?n=777` })
   const deadEntry = ctx.windows.windowFor(dead.id)!
