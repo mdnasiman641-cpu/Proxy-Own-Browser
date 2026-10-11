@@ -71,6 +71,8 @@ describe('DNS and proxy route', () => {
     expect(assessDns(HTTP, true).detail).toMatch(/cannot be observed/)
     expect(assessDns({ ...HTTP, protocol: 'socks5' }, null).verdict).toBe('unknown')
     expect(assessDns({ ...HTTP, bypassRules: '*.lan' }, true).verdict).toBe('warning')
+    // A subtractive rule sends nothing direct.
+    expect(assessDns({ ...HTTP, bypassRules: '<-loopback>' }, true).verdict).toBe('pass')
   })
 
   it('checks the proxy Chromium resolves for the session, and flags a direct fallback', () => {

@@ -262,7 +262,11 @@ export function assessDns(proxy: ProxyConfig | null, proxyReachedHost: boolean |
       detail: 'No proxy: host names are resolved by this PC’s DNS settings.'
     }
   }
-  const bypass = proxy.bypassRules.trim()
+  // Rules such as `<-loopback>` remove an implicit bypass; they do not send anything direct.
+  const bypass = proxy.bypassRules
+    .split(/[,;\s]+/)
+    .filter((rule) => rule && !rule.startsWith('<-'))
+    .join(', ')
   const bypassNote = bypass ? ` Addresses matching the bypass rules (${bypass}) skip the proxy and use this PC’s DNS.` : ''
   if (proxy.protocol === 'socks4') {
     return {
