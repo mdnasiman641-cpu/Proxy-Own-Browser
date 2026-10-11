@@ -85,7 +85,7 @@ export async function inspectExtension(dir: string): Promise<ExtensionInfo> {
   if (lstatSync(manifestPath).size > EXTENSION_LIMITS.manifestMaxBytes) throw new ValidationError('manifest.json is too large.')
   let manifest: Record<string, unknown>
   try {
-    const parsed = JSON.parse((await readFile(manifestPath, 'utf8')).replace(/^﻿/, '')) as unknown
+    const parsed = JSON.parse((await readFile(manifestPath, 'utf8')).replace(/^\uFEFF/, '')) as unknown
     if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) throw new Error('not an object')
     manifest = parsed as Record<string, unknown>
   } catch {
