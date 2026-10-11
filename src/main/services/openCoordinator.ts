@@ -27,6 +27,11 @@ export class OpenCoordinator {
     return this.pending.size
   }
 
+  /** Profiles whose windows are still starting. */
+  pendingIds(): string[] {
+    return [...this.pending.keys()]
+  }
+
   async open(profileId: string, create: () => Promise<void>): Promise<OpenOutcome> {
     if (this.deps.isOpen(profileId)) {
       this.deps.focus(profileId)

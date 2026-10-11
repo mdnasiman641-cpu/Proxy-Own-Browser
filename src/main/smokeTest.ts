@@ -4,7 +4,11 @@ import { join } from 'node:path'
 import { app, type BrowserWindow, type WebContents } from 'electron'
 import type { ProxyTestResult } from '@shared/types'
 import type { Logger } from './services/logger'
+import type { BulkCreator } from './services/bulkCreate'
+import type { CatalogService } from './services/catalogService'
+import type { MetadataBackupService } from './services/metadataBackup'
 import type { ProfileService } from './services/profileService'
+import type { TemplateService } from './services/templateService'
 import type { ProfileWindowManager } from './electron/profileWindows'
 import { ProxyTester } from './electron/proxyTester'
 import type { SessionManager } from './electron/sessionManager'
@@ -24,6 +28,10 @@ interface SmokeContext {
   sessions: SessionManager
   windows: ProfileWindowManager
   proxyTester: ProxyTester
+  catalog: CatalogService
+  templates: TemplateService
+  bulkCreator: BulkCreator
+  backups: MetadataBackupService
   getDashboard: () => BrowserWindow | null
   logger: Logger
 }
@@ -117,6 +125,23 @@ export async function runSmokeTest(ctx: SmokeContext): Promise<void> {
       const b = all.find((p) => p.name === 'Smoke B')
       check('profiles restored from SQLite', all.length === 2 && Boolean(a && b), `${all.length} profiles`)
       check('proxy settings restored', b?.proxy?.host === '127.0.0.1' && b.proxy.port === 9)
+      const group = ctx.catalog.listGroups().find((g) => g.name === 'Smoke group')
+      check(
+        'group and tags restored after restart',
+        Boolean(group) && a?.groupId === group?.id && JSON.stringify(a?.tags) === '["smoke","vip"]',
+        `${a?.groupId ?? 'none'} ${JSON.stringify(a?.tags)}`
+      )
+      check('template restored after restart', ctx.templates.list().some((t) => t.name === 'Smoke template'))
+      const dash = ctx.getDashboard()?.webContents
+      check(
+        'language setting restored after restart',
+        Boolean(dash) && (await waitFor(async () => (await shellLanguage(dash!)) === 'bn'))
+      )
+      if (dash) {
+        await viaDashboard(ctx, `window.pob.updateSettings({ language: 'en' })`)
+        await dash.executeJavaScript('location.reload()')
+        check('language switches back to English', await waitFor(async () => (await shellLanguage(dash)) === 'en'))
+      }
       if (a && b) {
         check('profile A cookie restored after restart', (await readCookie(ctx, a.partition)).join() === 'alpha')
         check('profile B cookie restored after restart', (await readCookie(ctx, b.partition)).join() === 'beta')
@@ -206,6 +231,7 @@ async function setupStage(ctx: SmokeContext, check: Check, fixtures: Fixtures | 
   if (fixtures) {
     await tabChecks(ctx, check, fixtures, a.id, b.id)
     await proxyChecks(ctx, check, fixtures)
+    await managerChecks(ctx, check, a.id, b.id)
   } else {
     check('fixtures available', false, 'POB_SMOKE_FIXTURES not set')
   }
@@ -275,12 +301,17 @@ async function tabChecks(ctx: SmokeContext, check: Check, f: Fixtures, aId: stri
   linkTab.view.webContents.forcefullyCrashRenderer()
   const crashed = await waitFor(() => ctx.windows.state(entry).tabs.find((t) => t.id === linkTab.id)?.crashed === true)
   check('crashed tab is reported', crashed && ctx.windows.isOpen(aId))
+  check('profile status shows the crash', await waitFor(() => ctx.windows.statuses()[aId] === 'crashed'))
   ctx.windows.reload(entry)
   const recovered = await waitFor(() => {
     const s = ctx.windows.state(entry).tabs.find((t) => t.id === linkTab.id)
     return s?.crashed === false && !linkTab.view.webContents.isLoading() && !linkTab.view.webContents.isCrashed()
   }, 15_000)
   check('crashed tab recovers on reload', recovered)
+  check(
+    'profile status returns to running after recovery',
+    await waitFor(() => ctx.windows.statuses()[aId] === 'running')
+  )
 
   ctx.windows.closeTab(entry, linkTab.id)
   ctx.windows.closeTab(entry, secondTab)
@@ -389,4 +420,131 @@ async function proxyChecks(ctx: SmokeContext, check: Check, f: Fixtures): Promis
   )
 
   for (const id of [ok, wrong, missing, closed, blackhole, challenge, direct]) ctx.profiles.delete(id)
+}
+
+function shellLanguage(contents: WebContents): Promise<string> {
+  return contents
+    .executeJavaScript(`document.querySelector('[data-testid="app-shell"]')?.getAttribute('lang') ?? ''`)
+    .catch(() => '')
+}
+
+type IpcReply<T> = { ok: true; data: T } | { ok: false; error: string }
+
+/** Calls the dashboard preload API exactly as the UI does (real IPC, sender checks, validation). */
+async function viaDashboard<T>(ctx: SmokeContext, expression: string): Promise<T> {
+  const reply = (await ctx.getDashboard()!.webContents.executeJavaScript(expression)) as IpcReply<T>
+  if (!reply.ok) throw new Error(`IPC failed: ${reply.error}`)
+  return reply.data
+}
+
+/** Phase 3: profile manager features driven through the dashboard IPC API. */
+async function managerChecks(ctx: SmokeContext, check: Check, aId: string, bId: string): Promise<void> {
+  const before = ctx.profiles.count()
+  const openBefore = ctx.windows.openIds().length
+
+  // --- bulk creation: preview, create in chunks, unique partitions, nothing opened ---
+  const spec = { nameTemplate: 'Bulk-{number}', count: 25, padding: 2, tags: ['bulk'] }
+  const plan = await viaDashboard<{ ready: boolean; items: { name: string }[] }>(
+    ctx,
+    `window.pob.planBulkCreate(${JSON.stringify(spec)})`
+  )
+  check('bulk plan previews 25 names', plan.ready && plan.items.length === 25 && plan.items[0]!.name === 'Bulk-01')
+  const names = plan.items.map((i) => i.name)
+  let created = 0
+  for (let i = 0; i < names.length; i += 10) {
+    const results = await viaDashboard<{ ok: boolean }[]>(
+      ctx,
+      `window.pob.bulkCreate(${JSON.stringify(spec)}, ${JSON.stringify(names.slice(i, i + 10))})`
+    )
+    created += results.filter((r) => r.ok).length
+  }
+  const bulk = ctx.profiles.list().filter((p) => p.name.startsWith('Bulk-'))
+  check('bulk create made 25 profiles', created === 25 && bulk.length === 25 && ctx.profiles.count() === before + 25)
+  check('bulk profiles have unique ids and partitions', new Set(bulk.map((p) => p.partition)).size === 25 && new Set(bulk.map((p) => p.id)).size === 25)
+  check('bulk create does not open profiles', ctx.windows.openIds().length === openBefore)
+  const retry = await viaDashboard<{ ok: boolean; outcome: string }[]>(
+    ctx,
+    `window.pob.bulkCreate(${JSON.stringify(spec)}, ${JSON.stringify(names.slice(0, 3))})`
+  )
+  check('retrying created names never duplicates', retry.every((r) => !r.ok && r.outcome === 'exists') && ctx.profiles.count() === before + 25)
+
+  // --- groups, tags and templates ---
+  const group = await viaDashboard<{ id: string }>(ctx, `window.pob.createGroup({ name: 'Smoke group' })`)
+  const ids = bulk.slice(0, 5).map((p) => p.id)
+  const moved = await viaDashboard<{ succeeded: number }>(ctx, `window.pob.bulkAssignGroup(${JSON.stringify(ids)}, ${JSON.stringify(group.id)})`)
+  check('bulk move to group', moved.succeeded === 5 && ctx.profiles.list().filter((p) => p.groupId === group.id).length === 5)
+  const tagged = await viaDashboard<{ succeeded: number }>(
+    ctx,
+    `window.pob.bulkChangeTags(${JSON.stringify(ids)}, { add: ['vip'], remove: ['bulk'] })`
+  )
+  check('bulk add/remove tags', tagged.succeeded === 5 && ctx.profiles.get(ids[0]!).tags.join() === 'vip')
+  await viaDashboard(ctx, `window.pob.updateProfile(${JSON.stringify(aId)}, { groupId: ${JSON.stringify(group.id)}, tags: ['smoke', 'vip'] })`)
+  await viaDashboard(ctx, `window.pob.createTemplate({ name: 'Smoke template', groupId: ${JSON.stringify(group.id)}, tags: ['smoke'] })`)
+  const ungrouped = await viaDashboard<number>(ctx, `window.pob.deleteGroup(${JSON.stringify((await viaDashboard<{ id: string }>(ctx, `window.pob.createGroup({ name: 'Temp group' })`)).id)})`)
+  check('deleting an empty group works and deletes no profiles', ungrouped === 0 && ctx.profiles.count() === before + 25)
+
+  // --- bulk open respects the concurrency limit (2) ---
+  ctx.windows.close(bId)
+  await waitFor(() => !ctx.windows.isOpen(bId))
+  const toOpen = [bId, bulk[10]!.id, bulk[11]!.id]
+  const opened = await viaDashboard<{ succeeded: number; failed: number; results: { ok: boolean; error: string | null }[] }>(
+    ctx,
+    `window.pob.bulkOpen(${JSON.stringify(toOpen)})`
+  )
+  check(
+    'bulk open stops at the window limit and reports the rest',
+    opened.succeeded === 1 && opened.failed === 2 && ctx.windows.openIds().length === 2 &&
+      opened.results.slice(1).every((r) => /Only 2 profile window/.test(r.error ?? '')),
+    `${opened.succeeded} ok / ${opened.failed} failed, ${ctx.windows.openIds().length} open`
+  )
+  const statuses = await viaDashboard<Record<string, string>>(ctx, 'window.pob.profileStatuses()')
+  check('running statuses match open windows', Object.keys(statuses).sort().join() === ctx.windows.openIds().sort().join())
+
+  // --- bulk delete: data deletion is isolated to the selected profile ---
+  const d1 = bulk[20]!
+  const d2 = bulk[21]!
+  const expirationDate = Math.floor(Date.now() / 1000) + 86_400
+  for (const [p, value] of [[d1, 'd1'], [d2, 'd2']] as const) {
+    await ctx.sessions.sessionFor(p.partition).cookies.set({ url: COOKIE_URL, name: COOKIE_NAME, value, expirationDate })
+  }
+  await ctx.sessions.flushAll()
+  const deleted = await viaDashboard<{ succeeded: number; results: { outcome: string }[] }>(
+    ctx,
+    `window.pob.bulkDelete(${JSON.stringify([d1.id])}, { clearData: true })`
+  )
+  check('bulk delete with browser data', deleted.succeeded === 1 && !ctx.profiles.exists(d1.id), deleted.results[0]?.outcome)
+  check("deleted profile's cookies are gone", (await readCookie(ctx, d1.partition)).length === 0)
+  check("other profiles' cookies are untouched", (await readCookie(ctx, d2.partition)).join() === 'd2' && (await readCookie(ctx, ctx.profiles.get(aId).partition)).join() === 'alpha')
+  const openDelete = await viaDashboard<{ failed: number; results: { error: string | null }[] }>(
+    ctx,
+    `window.pob.bulkDelete(${JSON.stringify([aId])}, { clearData: false })`
+  )
+  check('open profiles are not deleted', openDelete.failed === 1 && ctx.profiles.exists(aId), openDelete.results[0]?.error ?? '')
+
+  // --- metadata backup round trip (v2 with integrity check) ---
+  const backup = ctx.backups.buildBackup('smoke', [aId])
+  const text = JSON.stringify(backup)
+  check('backup excludes passwords and partitions', !text.includes('persist:profile-') && !text.includes('plain:v1:') && !text.includes('enc:v1:'))
+
+  // --- dashboard UI: profile manager renders and the language switch works ---
+  const dash = ctx.getDashboard()!.webContents
+  await dash.executeJavaScript(`document.querySelector('[data-nav="profiles"]').click()`)
+  check('profile manager renders the profiles', await waitFor(async () =>
+    (await dash.executeJavaScript(`document.querySelectorAll('[data-testid="profile-manager"] [data-row]').length`)) === ctx.profiles.count()
+  ))
+  // Bangla is left selected so the restart stage can confirm the setting persisted.
+  await viaDashboard(ctx, `window.pob.updateSettings({ language: 'bn' })`)
+  await dash.executeJavaScript('location.reload()')
+  check('dashboard switches to Bangla', await waitFor(async () =>
+    (await shellLanguage(dash)) === 'bn' &&
+    Boolean(await dash.executeJavaScript(`document.querySelector('[data-nav="profiles"]')?.textContent?.includes('প্রোফাইল') ?? false`).catch(() => false))
+  ))
+
+  // Clean up so the restart stage sees exactly the two original profiles.
+  for (const p of ctx.profiles.list()) {
+    if (!p.name.startsWith('Bulk-')) continue
+    if (ctx.windows.isOpen(p.id)) ctx.windows.close(p.id)
+    ctx.profiles.delete(p.id)
+  }
+  check('extra profiles cleaned up', ctx.profiles.count() === before, `${ctx.profiles.count()} profiles`)
 }

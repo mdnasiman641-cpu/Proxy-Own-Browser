@@ -1,9 +1,12 @@
 import { useState } from 'react'
 import type { BackupImportResult } from '@shared/types'
+import { Icon } from '../../common/Icon'
 import { errorMessage, unwrap } from '../../common/ipc'
+import { useI18n } from '../i18n'
 import type { AppData } from '../useAppData'
 
 export function BackupPage({ data }: { data: AppData }) {
+  const { t } = useI18n()
   const [busy, setBusy] = useState(false)
   const [lastImport, setLastImport] = useState<BackupImportResult | null>(null)
 
@@ -11,7 +14,7 @@ export function BackupPage({ data }: { data: AppData }) {
     setBusy(true)
     try {
       const result = await unwrap(window.pob.exportBackup())
-      if (result.saved) data.notify('success', `Saved ${result.profileCount} profile(s) to backup`)
+      if (result.saved) data.notify('success', t('backup.exported', { count: result.profileCount }))
     } catch (error) {
       data.notify('error', errorMessage(error))
     } finally {
@@ -25,7 +28,7 @@ export function BackupPage({ data }: { data: AppData }) {
       const result = await unwrap(window.pob.importBackup())
       if (!result.cancelled) {
         setLastImport(result)
-        data.notify('success', `Restored ${result.imported} profile(s)`)
+        data.notify('success', t('backup.restored', { count: result.imported }))
         await data.refresh()
       }
     } catch (error) {
@@ -39,40 +42,50 @@ export function BackupPage({ data }: { data: AppData }) {
     <section className="page">
       <header className="page-header">
         <div>
-          <h1>Backup &amp; Restore</h1>
-          <p className="subtitle">Save your profile list and settings to a file, or restore them.</p>
+          <h1>{t('nav.backup')}</h1>
+          <p className="subtitle">{t('backup.subtitle')}</p>
         </div>
       </header>
 
       <div className="panel-grid">
         <div className="panel">
-          <h2>Export backup</h2>
-          <p>
-            Saves {data.profiles.length} profile(s) — names, notes, colors, start pages and proxy
-            addresses — plus application settings to a <code>.json</code> file.
-          </p>
+          <h2>{t('backup.exportTitle')}</h2>
+          <p>{t('backup.exportBody', { count: data.profiles.length })}</p>
           <button type="button" className="button primary" disabled={busy} onClick={() => void exportBackup()}>
-            Export to file…
+            <Icon name="download" /> {t('backup.exportButton')}
           </button>
         </div>
         <div className="panel">
-          <h2>Restore from backup</h2>
-          <p>
-            Adds the profiles from a backup file. Existing profiles are kept; duplicate names get a
-            number added. Settings from the backup are applied.
-          </p>
+          <h2>{t('backup.restoreTitle')}</h2>
+          <p>{t('backup.restoreBody')}</p>
           <button type="button" className="button" disabled={busy} onClick={() => void importBackup()}>
-            Choose backup file…
+            {t('backup.restoreButton')}
           </button>
           {lastImport && (
-            <div className="alert info">
-              Imported {lastImport.imported}, skipped {lastImport.skipped}.
+            <div className="alert info" data-testid="restore-result">
+              {t('backup.result', {
+                imported: lastImport.imported,
+                skipped: lastImport.skipped,
+                created: lastImport.groupsCreated ?? 0,
+                merged: lastImport.groupsMerged ?? 0,
+                templates: lastImport.templatesImported ?? 0
+              })}
               {lastImport.renamed.length > 0 && (
                 <ul>
                   {lastImport.renamed.map((r) => (
-                    <li key={r}>Renamed: {r}</li>
+                    <li key={r}>{t('backup.renamed', { item: r })}</li>
                   ))}
                 </ul>
+              )}
+              {lastImport.warnings && lastImport.warnings.length > 0 && (
+                <>
+                  <strong>{t('backup.warnings')}</strong>
+                  <ul>
+                    {lastImport.warnings.map((w) => (
+                      <li key={w}>{w}</li>
+                    ))}
+                  </ul>
+                </>
               )}
             </div>
           )}
@@ -80,9 +93,12 @@ export function BackupPage({ data }: { data: AppData }) {
       </div>
 
       <div className="info-box">
-        <strong>Not included in backups:</strong> proxy passwords, cookies, saved logins and other
-        browsing data. Restored profiles start with a fresh, empty session, and any proxy passwords
-        must be entered again on the Proxy Settings page.
+        <strong>{t('backup.notIncludedTitle')}</strong>
+        <p>{t('backup.notIncluded')}</p>
+      </div>
+      <div className="info-box">
+        <strong>{t('backup.browserDataTitle')}</strong>
+        <p>{t('backup.browserDataBody')}</p>
       </div>
     </section>
   )

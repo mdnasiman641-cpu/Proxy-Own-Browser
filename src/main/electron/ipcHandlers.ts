@@ -14,23 +14,38 @@ import type {
   BackupExportResult,
   BackupImportResult,
   IpcResult,
+  BulkCreateSpec,
   ProfileInput,
   ProfileUpdate,
-  ProxyInput
+  ProxyInput,
+  TemplateInput
 } from '@shared/types'
+import { z } from 'zod'
 import {
   ValidationError,
   addressInputSchema,
+  bulkTagsChangeSchema,
   deleteOptionsSchema,
+  groupIdSchema,
+  groupInputSchema,
   nullableProfileIdSchema,
   optionalAddressSchema,
   parseOrThrow,
   profileIdSchema,
-  tabIdSchema
+  profileIdsSchema,
+  tabIdSchema,
+  tagIdSchema,
+  tagNameSchema,
+  templateIdSchema
 } from '@shared/validation'
-import { MAX_BACKUP_BYTES, createBackup, parseBackup } from '../services/backupService'
+import { MAX_BACKUP_BYTES, parseBackup } from '../services/backupService'
+import type { BulkCreator } from '../services/bulkCreate'
+import { runBulk, type BulkTarget } from '../services/bulkRunner'
+import type { CatalogService } from '../services/catalogService'
 import type { Logger } from '../services/logger'
+import type { MetadataBackupService } from '../services/metadataBackup'
 import { NotFoundError, type ProfileService } from '../services/profileService'
+import type { TemplateService } from '../services/templateService'
 import type { SecretCipher } from '../services/secretCipher'
 import type { SettingsService } from '../services/settingsService'
 import { isAppFrame } from './pages'
@@ -45,10 +60,21 @@ export interface IpcDeps {
   windows: ProfileWindowManager
   cipher: SecretCipher
   proxyTester: ProxyTester
+  catalog: CatalogService
+  templates: TemplateService
+  bulkCreator: BulkCreator
+  backups: MetadataBackupService
   logger: Logger
   getDashboard: () => BrowserWindow | null
   notifyProfilesChanged: () => void
+  /** Groups, tags or templates changed. */
+  notifyCatalogChanged: () => void
 }
+
+const groupUpdateSchema = z.object({
+  name: z.string().optional(),
+  color: z.string().optional()
+})
 
 class UntrustedSenderError extends Error {}
 
@@ -72,7 +98,25 @@ function respond<T>(channel: string, logger: Logger, run: () => Promise<T> | T):
 }
 
 export function registerIpcHandlers(deps: IpcDeps): void {
-  const { profiles, settings, windows, logger } = deps
+  const { profiles, settings, windows, logger, catalog, templates } = deps
+
+  /** Resolves validated ids to names for bulk result reporting. */
+  const targets = (ids: unknown): BulkTarget[] =>
+    parseOrThrow(profileIdsSchema, ids).map((id) => ({
+      id,
+      name: profiles.exists(id) ? profiles.get(id).name : '(deleted profile)'
+    }))
+  const logUnexpected = (action: string) => (item: BulkTarget, error: unknown) =>
+    logger.error(`Bulk ${action} failed for profile ${item.id}`, error)
+
+  const saveJson = async (title: string, defaultName: string, content: unknown) => {
+    const parent = deps.getDashboard()
+    const options = { title, defaultPath: defaultName, filters: [{ name: 'Backup file', extensions: ['json'] }] }
+    const choice = parent ? await dialog.showSaveDialog(parent, options) : await dialog.showSaveDialog(options)
+    if (choice.canceled || !choice.filePath) return null
+    await writeFile(choice.filePath, JSON.stringify(content, null, 2), 'utf8')
+    return choice.filePath
+  }
 
   /** Dashboard channels: only the dashboard window's own page may call them. */
   const dashboard = <T>(channel: string, fn: (...args: unknown[]) => Promise<T> | T): void => {
@@ -147,32 +191,18 @@ export function registerIpcHandlers(deps: IpcDeps): void {
   })
 
   dashboard(DashboardChannels.exportBackup, async (): Promise<BackupExportResult> => {
-    const all = profiles.list()
+    const backup = deps.backups.buildBackup(app.getVersion())
     const date = new Date().toISOString().slice(0, 10)
-    const parent = deps.getDashboard()
-    const options = {
-      title: 'Export profile backup',
-      defaultPath: `proxy-own-browser-backup-${date}.json`,
-      filters: [{ name: 'Backup file', extensions: ['json'] }]
-    }
-    const choice = parent
-      ? await dialog.showSaveDialog(parent, options)
-      : await dialog.showSaveDialog(options)
-    if (choice.canceled || !choice.filePath) return { saved: false, profileCount: all.length }
-    const backup = createBackup(
-      all.map((p) => profiles.toPortable(p)),
-      settings.get(),
-      app.getVersion()
-    )
-    await writeFile(choice.filePath, JSON.stringify(backup, null, 2), 'utf8')
-    logger.info(`Exported backup with ${all.length} profile(s)`)
-    return { saved: true, filePath: choice.filePath, profileCount: all.length }
+    const filePath = await saveJson('Export metadata backup', `proxy-own-browser-backup-${date}.json`, backup)
+    if (!filePath) return { saved: false, profileCount: backup.profiles.length }
+    logger.info(`Exported metadata backup with ${backup.profiles.length} profile(s)`)
+    return { saved: true, filePath, profileCount: backup.profiles.length }
   })
 
   dashboard(DashboardChannels.importBackup, async (): Promise<BackupImportResult> => {
     const parent = deps.getDashboard()
     const options = {
-      title: 'Restore profiles from backup',
+      title: 'Restore from metadata backup',
       properties: ['openFile' as const],
       filters: [{ name: 'Backup file', extensions: ['json'] }]
     }
@@ -186,11 +216,14 @@ export function registerIpcHandlers(deps: IpcDeps): void {
     if ((await stat(filePath)).size > MAX_BACKUP_BYTES) {
       throw new ValidationError('Backup file is too large')
     }
+    // Parsing verifies structure and integrity before anything is changed.
     const parsed = parseBackup(await readFile(filePath, 'utf8'))
-    const summary = profiles.importProfiles(parsed.profiles)
-    if (Object.keys(parsed.settings).length) settings.update(parsed.settings)
-    logger.info(`Restored backup: ${summary.imported} imported, ${summary.skipped} skipped`)
+    const summary = deps.backups.restore(parsed)
+    logger.info(
+      `Restored v${parsed.version} backup: ${summary.imported} imported, ${summary.skipped} skipped, ${summary.templatesImported ?? 0} templates`
+    )
     deps.notifyProfilesChanged()
+    deps.notifyCatalogChanged()
     return { ...summary, cancelled: false }
   })
 
@@ -216,6 +249,173 @@ export function registerIpcHandlers(deps: IpcDeps): void {
   })
 
   dashboard(DashboardChannels.resourceUsage, () => windows.resourceUsage())
+
+  dashboard(DashboardChannels.profileStatuses, () => windows.statuses())
+
+  // ---------- groups & tags ----------
+  dashboard(DashboardChannels.listGroups, () => catalog.listGroups())
+  dashboard(DashboardChannels.createGroup, (input) => {
+    const group = catalog.createGroup(parseOrThrow(groupInputSchema, input))
+    deps.notifyCatalogChanged()
+    return group
+  })
+  dashboard(DashboardChannels.updateGroup, (id, input) => {
+    const group = catalog.updateGroup(parseOrThrow(groupIdSchema, id), parseOrThrow(groupUpdateSchema, input))
+    deps.notifyCatalogChanged()
+    return group
+  })
+  dashboard(DashboardChannels.deleteGroup, (id) => {
+    const ungrouped = catalog.deleteGroup(parseOrThrow(groupIdSchema, id))
+    logger.info(`Deleted a group; ${ungrouped} profile(s) became ungrouped`)
+    deps.notifyCatalogChanged()
+    deps.notifyProfilesChanged()
+    return ungrouped
+  })
+  dashboard(DashboardChannels.listTags, () => catalog.listTags())
+  dashboard(DashboardChannels.createTag, (name) => {
+    const tag = catalog.createTag(parseOrThrow(tagNameSchema, name))
+    deps.notifyCatalogChanged()
+    return tag
+  })
+  dashboard(DashboardChannels.renameTag, (id, name) => {
+    const tag = catalog.renameTag(parseOrThrow(tagIdSchema, id), parseOrThrow(tagNameSchema, name))
+    deps.notifyCatalogChanged()
+    deps.notifyProfilesChanged()
+    return tag
+  })
+  dashboard(DashboardChannels.deleteTag, (id) => {
+    const removed = catalog.deleteTag(parseOrThrow(tagIdSchema, id))
+    deps.notifyCatalogChanged()
+    deps.notifyProfilesChanged()
+    return removed
+  })
+
+  // ---------- templates ----------
+  dashboard(DashboardChannels.listTemplates, () =>
+    templates.list().map((t) => ({ ...t, problems: templates.problems(t) }))
+  )
+  dashboard(DashboardChannels.createTemplate, (input) => {
+    const template = templates.create(input as TemplateInput)
+    deps.notifyCatalogChanged()
+    return template
+  })
+  dashboard(DashboardChannels.updateTemplate, (id, input) => {
+    const template = templates.update(parseOrThrow(templateIdSchema, id), input as TemplateInput)
+    deps.notifyCatalogChanged()
+    return template
+  })
+  dashboard(DashboardChannels.duplicateTemplate, (id) => {
+    const template = templates.duplicate(parseOrThrow(templateIdSchema, id))
+    deps.notifyCatalogChanged()
+    return template
+  })
+  dashboard(DashboardChannels.deleteTemplate, (id) => {
+    templates.delete(parseOrThrow(templateIdSchema, id))
+    deps.notifyCatalogChanged()
+  })
+
+  // ---------- bulk creation (never opens the new profiles) ----------
+  dashboard(DashboardChannels.planBulkCreate, (spec) => deps.bulkCreator.plan(spec as BulkCreateSpec))
+  dashboard(DashboardChannels.bulkCreate, (spec, names) => {
+    const results = deps.bulkCreator.create(spec as BulkCreateSpec, names as string[])
+    const created = results.filter((r) => r.ok).length
+    logger.info(`Bulk create: ${created} created, ${results.length - created} failed`)
+    if (created) {
+      deps.notifyProfilesChanged()
+      deps.notifyCatalogChanged()
+    }
+    return results
+  })
+
+  // ---------- bulk actions on selected profiles ----------
+  dashboard(DashboardChannels.bulkOpen, async (ids) => {
+    // Every open goes through the window coordinator, so the configured limit always applies.
+    const summary = await runBulk('open', targets(ids), (item) => windows.open(item.id), logUnexpected('open'))
+    logger.info(`Bulk open: ${summary.succeeded} ok, ${summary.failed} failed`)
+    deps.notifyProfilesChanged()
+    return summary
+  })
+  dashboard(DashboardChannels.bulkClose, async (ids) =>
+    runBulk(
+      'close',
+      targets(ids),
+      (item) => {
+        if (!windows.isOpen(item.id)) return 'not-open'
+        windows.close(item.id)
+        return 'closed'
+      },
+      logUnexpected('close')
+    )
+  )
+  dashboard(DashboardChannels.bulkAssignGroup, async (ids, groupId) => {
+    const group = groupId === null ? null : parseOrThrow(groupIdSchema, groupId)
+    catalog.assertGroupReference(group)
+    const summary = await runBulk(
+      'assign-group',
+      targets(ids),
+      async (item) => {
+        await windows.profileUpdated(profiles.update(item.id, { groupId: group }))
+        return group ? 'moved' : 'ungrouped'
+      },
+      logUnexpected('assign-group')
+    )
+    deps.notifyProfilesChanged()
+    deps.notifyCatalogChanged()
+    return summary
+  })
+  dashboard(DashboardChannels.bulkChangeTags, async (ids, change) => {
+    const { add, remove } = parseOrThrow(bulkTagsChangeSchema, change)
+    if (!add.length && !remove.length) throw new ValidationError('Choose tags to add or remove')
+    const summary = await runBulk(
+      'change-tags',
+      targets(ids),
+      (item) => {
+        profiles.changeTags(item.id, add, remove)
+        return 'updated'
+      },
+      logUnexpected('change-tags')
+    )
+    deps.notifyProfilesChanged()
+    deps.notifyCatalogChanged()
+    return summary
+  })
+  dashboard(DashboardChannels.bulkExport, async (ids) => {
+    const selected = targets(ids).map((t) => t.id).filter((id) => profiles.exists(id))
+    if (!selected.length) throw new ValidationError('The selected profiles no longer exist')
+    const backup = deps.backups.buildBackup(app.getVersion(), selected)
+    const date = new Date().toISOString().slice(0, 10)
+    const filePath = await saveJson(
+      'Export selected profiles',
+      `proxy-own-browser-profiles-${date}.json`,
+      backup
+    )
+    if (!filePath) return { saved: false, profileCount: selected.length }
+    logger.info(`Exported metadata for ${selected.length} selected profile(s)`)
+    return { saved: true, filePath, profileCount: selected.length }
+  })
+  dashboard(DashboardChannels.bulkDelete, async (ids, scope) => {
+    const { clearData } = parseOrThrow(deleteOptionsSchema, scope)
+    const summary = await runBulk(
+      'delete',
+      targets(ids),
+      async (item) => {
+        if (!profiles.exists(item.id)) throw new NotFoundError('Profile not found')
+        if (windows.isOpen(item.id)) throw new ValidationError('Close this profile window first')
+        const removed = profiles.delete(item.id)
+        if (!clearData) return 'deleted'
+        // Only this profile's own partition folder is touched.
+        const complete = await deps.sessions.clearData(removed.partition)
+        return complete ? 'deleted-with-data' : 'deleted-data-partially-removed'
+      },
+      logUnexpected('delete')
+    )
+    logger.info(
+      `Bulk delete (browser data ${clearData ? 'removed' : 'kept'}): ${summary.succeeded} ok, ${summary.failed} failed`
+    )
+    deps.notifyProfilesChanged()
+    deps.notifyCatalogChanged()
+    return summary
+  })
 
   toolbar(BrowserChannels.getState, (entry) => windows.state(entry))
   toolbar(BrowserChannels.navigate, (entry, input) => {

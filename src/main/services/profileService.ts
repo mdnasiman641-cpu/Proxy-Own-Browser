@@ -13,29 +13,38 @@ import {
   searchQuerySchema,
   type ParsedProxyInput
 } from '@shared/validation'
+import type { CatalogService } from './catalogService'
 import type { ProfileRecord, ProfileRepository } from './profileRepository'
 import { canReuseStoredPassword } from './proxyTest'
+import { NotFoundError } from './errors'
 import type { SecretCipher } from './secretCipher'
 
-export class NotFoundError extends Error {
-  constructor(message = 'Profile not found') {
-    super(message)
-    this.name = 'NotFoundError'
-  }
-}
+export { NotFoundError }
 
 export interface ProxyCredentials {
   username: string
   password: string
 }
 
-/** Profile fields carried in a backup file (no id, partition or password). */
+/** Profile fields carried in a backup file (never the partition, password or session data). */
 export interface PortableProfile {
+  /** Present in v2 backups; absent in v1 backups. */
+  id?: string
   name: string
   notes: string
   color: string
   startUrl: string | null
   proxy: Omit<ProxyConfig, 'hasPassword'> | null
+  groupId?: string | null
+  tags?: string[]
+}
+
+/** Options available only to main-process code (never accepted from IPC directly). */
+export interface CreateOptions {
+  /** Keep this id when restoring a backup, if it is free and its partition was never used. */
+  preferredId?: string
+  /** Copy the proxy settings, including the encrypted password, from this profile. */
+  proxySourceProfileId?: string | null
 }
 
 /** What a proxy test should connect through. Credentials stay in the main process. */
@@ -54,12 +63,15 @@ interface ProfileServiceOptions {
   now?: () => Date
   newId?: () => string
   maxProfiles?: number
+  /** Groups and tags. Required for group/tag fields; tests may omit it. */
+  catalog?: CatalogService
 }
 
 export class ProfileService {
   private readonly now: () => Date
   private readonly newId: () => string
   private readonly maxProfiles: number
+  private readonly catalog: CatalogService | undefined
 
   constructor(
     private readonly repo: ProfileRepository,
@@ -69,12 +81,26 @@ export class ProfileService {
     this.now = options.now ?? (() => new Date())
     this.newId = options.newId ?? randomUUID
     this.maxProfiles = options.maxProfiles ?? LIMITS.maxProfiles
+    this.catalog = options.catalog
   }
 
   list(query?: string): Profile[] {
     const q = parseOrThrow(searchQuerySchema, query)?.trim()
     const records = q ? this.repo.search(q) : this.repo.findAll()
-    return records.map(toProfile)
+    const tags = this.catalog?.tagsByProfile() ?? new Map<string, string[]>()
+    return records.map((r) => toProfile(r, tags.get(r.id) ?? []))
+  }
+
+  exists(id: string): boolean {
+    return this.repo.findById(id) !== undefined
+  }
+
+  isNameTaken(name: string): boolean {
+    return this.repo.isNameTaken(name)
+  }
+
+  get maxProfileCount(): number {
+    return this.maxProfiles
   }
 
   count(): number {
@@ -82,10 +108,11 @@ export class ProfileService {
   }
 
   get(id: string): Profile {
-    return toProfile(this.getRecord(id))
+    const record = this.getRecord(id)
+    return toProfile(record, this.catalog?.tagsForProfile(record.id) ?? [])
   }
 
-  create(input: ProfileInput): Profile {
+  create(input: ProfileInput, options: CreateOptions = {}): Profile {
     const data = parseOrThrow(profileInputSchema, input)
     if (this.repo.count() >= this.maxProfiles) {
       throw new ValidationError(`You can save at most ${this.maxProfiles} profiles`)
@@ -93,8 +120,12 @@ export class ProfileService {
     if (this.repo.isNameTaken(data.name)) {
       throw new ValidationError(`A profile named "${data.name}" already exists`)
     }
+    this.assertCatalogFields(data.groupId, data.tags)
+    const proxySource = options.proxySourceProfileId
+      ? this.proxySourceRecord(options.proxySourceProfileId)
+      : null
 
-    const id = this.uniqueId()
+    const id = this.uniqueId(options.preferredId)
     const timestamp = this.now().toISOString()
     const record: ProfileRecord = {
       id,
@@ -109,13 +140,19 @@ export class ProfileService {
       proxyUsername: null,
       proxyPassword: null,
       proxyBypass: '',
+      groupId: data.groupId ?? null,
       createdAt: timestamp,
       updatedAt: timestamp,
       lastOpenedAt: null
     }
     if (data.proxy) this.applyProxy(record, data.proxy)
-    this.repo.insert(record)
-    return toProfile(record)
+    else if (proxySource) copyProxy(proxySource, record)
+    // Profile row and its tags are written together, or not at all.
+    this.repo.transaction(() => {
+      this.repo.insert(record)
+      if (data.tags?.length) this.catalog!.setProfileTags(record.id, data.tags)
+    })
+    return this.get(record.id)
   }
 
   update(id: string, update: ProfileUpdate): Profile {
@@ -132,17 +169,43 @@ export class ProfileService {
     if (data.color !== undefined) record.color = data.color
     if (data.startUrl !== undefined) record.startUrl = data.startUrl
     if (data.proxy) this.applyProxy(record, data.proxy)
+    this.assertCatalogFields(data.groupId, data.tags)
+    if (data.groupId !== undefined) record.groupId = data.groupId
 
     record.updatedAt = this.now().toISOString()
+    this.repo.transaction(() => {
+      this.repo.update(record)
+      if (data.tags !== undefined) this.catalog!.setProfileTags(record.id, data.tags)
+    })
+    return this.get(record.id)
+  }
+
+  /** Adds/removes tags on a profile without touching its other fields. */
+  changeTags(id: string, add: string[], remove: string[]): Profile {
+    const record = this.getRecord(id)
+    if (!this.catalog) throw new Error('Tags are not available')
+    this.repo.transaction(() => {
+      this.catalog!.changeProfileTags(record.id, add, remove)
+      record.updatedAt = this.now().toISOString()
+      this.repo.update(record)
+    })
+    return this.get(record.id)
+  }
+
+  /** Copies another profile's proxy settings (including the encrypted password) onto this one. */
+  copyProxyFrom(id: string, sourceId: string): Profile {
+    const record = this.getRecord(id)
+    copyProxy(this.proxySourceRecord(sourceId), record)
+    record.updatedAt = this.now().toISOString()
     this.repo.update(record)
-    return toProfile(record)
+    return this.get(record.id)
   }
 
   /** Deletes a profile and returns it so the caller can clean up its session data. */
   delete(id: string): Profile {
-    const record = this.getRecord(id)
-    this.repo.delete(record.id)
-    return toProfile(record)
+    const profile = this.get(id)
+    this.repo.delete(profile.id)
+    return profile
   }
 
   markOpened(id: string): void {
@@ -201,6 +264,9 @@ export class ProfileService {
 
   toPortable(profile: Profile): PortableProfile {
     return {
+      id: profile.id,
+      groupId: profile.groupId,
+      tags: profile.tags,
       name: profile.name,
       notes: profile.notes,
       color: profile.color,
@@ -264,7 +330,27 @@ export class ProfileService {
     return record
   }
 
-  private uniqueId(): string {
+  private assertCatalogFields(groupId: string | null | undefined, tags: string[] | undefined): void {
+    if ((groupId || tags?.length) && !this.catalog) throw new Error('Groups and tags are not available')
+    this.catalog?.assertGroupReference(groupId)
+  }
+
+  private proxySourceRecord(sourceId: string): ProfileRecord {
+    const source = this.repo.findById(parseOrThrow(profileIdSchema, sourceId))
+    if (!source) throw new ValidationError('The profile chosen for proxy settings no longer exists')
+    if (!source.proxyProtocol) throw new ValidationError(`"${source.name}" has no proxy to copy`)
+    return source
+  }
+
+  private uniqueId(preferred?: string): string {
+    if (
+      preferred &&
+      profileIdSchema.safeParse(preferred).success &&
+      !this.repo.findById(preferred) &&
+      !this.repo.isPartitionUsed(partitionForProfile(preferred))
+    ) {
+      return preferred
+    }
     for (let attempt = 0; attempt < 10; attempt++) {
       const id = this.newId()
       if (!this.repo.findById(id) && !this.repo.isPartitionUsed(partitionForProfile(id))) {
@@ -309,7 +395,17 @@ export class ProfileService {
   }
 }
 
-export function toProfile(record: ProfileRecord): Profile {
+/** Copies proxy fields between records. The password stays encrypted; it is never decrypted here. */
+function copyProxy(from: ProfileRecord, to: ProfileRecord): void {
+  to.proxyProtocol = from.proxyProtocol
+  to.proxyHost = from.proxyHost
+  to.proxyPort = from.proxyPort
+  to.proxyUsername = from.proxyUsername
+  to.proxyPassword = from.proxyPassword
+  to.proxyBypass = from.proxyBypass
+}
+
+export function toProfile(record: ProfileRecord, tags: string[] = []): Profile {
   const proxy: ProxyConfig | null =
     record.proxyProtocol && record.proxyHost && record.proxyPort
       ? {
@@ -329,6 +425,8 @@ export function toProfile(record: ProfileRecord): Profile {
     startUrl: record.startUrl,
     partition: record.partition,
     proxy,
+    groupId: record.groupId,
+    tags,
     createdAt: record.createdAt,
     updatedAt: record.updatedAt,
     lastOpenedAt: record.lastOpenedAt

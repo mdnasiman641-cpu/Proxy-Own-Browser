@@ -44,11 +44,16 @@ jobs:
       - name: Build app
         run: npm run build 2>&1 | tee ci-build.log; exit ${PIPESTATUS[0]}
 
-      - name: End-to-end smoke test (profiles, tabs, proxy tests, restart)
+      - name: End-to-end smoke test (profiles, tabs, proxy tests, profile manager, restart)
         run: node scripts/smoke-test.mjs 2>&1 | tee ci-smoke.log; exit ${PIPESTATUS[0]}
 
-      - name: Package Windows installer and portable EXE
-        run: npx electron-builder --win --x64 --publish never 2>&1 | tee ci-package.log; exit ${PIPESTATUS[0]}
+      - name: Package Windows installer (npm run dist:win)
+        run: npm run dist:win 2>&1 | tee ci-dist-win.log; exit ${PIPESTATUS[0]}
+        env:
+          CSC_IDENTITY_AUTO_DISCOVERY: 'false'
+
+      - name: Package portable EXE (npm run dist:portable)
+        run: npm run dist:portable 2>&1 | tee ci-dist-portable.log; exit ${PIPESTATUS[0]}
         env:
           CSC_IDENTITY_AUTO_DISCOVERY: 'false'
 
@@ -62,13 +67,23 @@ jobs:
             level=notice
             grep -qiE "error|fail|✗|×" "$f" && level=warning
             if [ "$f" = ci-smoke.log ]; then
-              body=$(grep -E '^\[smoke\]' "$f" | tail -n 90)   # every check result
+              # One annotation per stage (annotations are size-limited) plus the overall result.
+              for stage in setup verify; do
+                part=$(grep -E "^\[smoke\] $stage:" "$f" | grep -vE ': PASS (dashboard renders|dashboard preload API available)$' | sed -e 's/%/%25/g' | awk '{printf "%s%%0A", $0}')
+                echo "::${level} title=ci-smoke.log ($stage)::${part}"
+              done
+              body=$(grep -E '^\[smoke\]' "$f" | grep -vE '^\[smoke\] (setup|verify):' | tail -n 20)
             else
               body=$(tail -n 45 "$f")
             fi
             body=$(printf '%s\n' "$body" | sed -e 's/\x1b\[[0-9;]*m//g' | sed -e 's/%/%25/g' | awk '{printf "%s%%0A", $0}')
             echo "::${level} title=${f}::${body}"
           done
+
+      - name: List Windows executables
+        run: |
+          list=$(ls -l release/*/*.exe | awk '{printf "%s  %.1f MB%%0A", $NF, $5/1048576}')
+          echo "::notice title=Windows executables::${list}"
 
       - name: Upload Windows build
         uses: actions/upload-artifact@v4

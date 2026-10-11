@@ -9,12 +9,21 @@ import {
 } from 'electron'
 import { Events } from '@shared/ipc'
 import { describeProxy } from '@shared/proxy'
-import type { NavigationState, Profile, ResourceUsage, TabState } from '@shared/types'
+import type {
+  NavigationState,
+  Profile,
+  ProfileResourceUsage,
+  ProfileRuntimeStatus,
+  ResourceUsage,
+  TabState
+} from '@shared/types'
 import { isNavigableUrl, normalizeAddressInput } from '@shared/url'
 import { ValidationError } from '@shared/validation'
 import type { Logger } from '../services/logger'
 import { OpenCoordinator, type OpenOutcome } from '../services/openCoordinator'
 import type { ProfileService } from '../services/profileService'
+import { attributeMemory } from '../services/resourceAttribution'
+import { deriveStatuses, statusOf } from '../services/runtimeStatus'
 import type { SettingsService } from '../services/settingsService'
 import { TabList, type AddTabOptions } from '../services/tabList'
 import { appWebPreferences, loadPage, lockDownAppContents } from './pages'
@@ -58,6 +67,8 @@ export interface ProfileWindowDeps {
   sessions: SessionManager
   logger: Logger
   onOpenProfilesChanged: (ids: string[]) => void
+  /** Called (coalesced) whenever any profile's runtime status may have changed. */
+  onStatusesChanged?: (statuses: Record<string, ProfileRuntimeStatus>) => void
 }
 
 let tabSequence = 0
@@ -66,6 +77,7 @@ const nextTabId = (): string => `tab-${++tabSequence}`
 export class ProfileWindowManager {
   private readonly windows = new Map<string, ProfileWindow>()
   private readonly coordinator: OpenCoordinator
+  private statusTimer: ReturnType<typeof setTimeout> | null = null
 
   constructor(private readonly deps: ProfileWindowDeps) {
     this.coordinator = new OpenCoordinator({
@@ -112,7 +124,34 @@ export class ProfileWindowManager {
    * merged, and windows still starting count toward the concurrency limit.
    */
   open(profileId: string, options: { initialUrl?: string } = {}): Promise<OpenOutcome> {
-    return this.coordinator.open(profileId, () => this.create(profileId, options))
+    return this.coordinator
+      .open(profileId, () => {
+        this.notifyStatuses()
+        return this.create(profileId, options)
+      })
+      .finally(() => this.notifyStatuses())
+  }
+
+  /** Live status of every profile that is not closed. */
+  statuses(): Record<string, ProfileRuntimeStatus> {
+    return deriveStatuses(
+      this.coordinator.pendingIds(),
+      [...this.windows.entries()]
+        .filter(([, entry]) => !entry.window.isDestroyed())
+        .map(([profileId, entry]) => ({
+          profileId,
+          crashedTabs: entry.tabs.values().filter((t) => t.crashed).length
+        }))
+    )
+  }
+
+  /** Coalesces status notifications from bursts of events into one push. */
+  private notifyStatuses(): void {
+    if (!this.deps.onStatusesChanged || this.statusTimer) return
+    this.statusTimer = setTimeout(() => {
+      this.statusTimer = null
+      this.deps.onStatusesChanged?.(this.statuses())
+    }, 50)
   }
 
   close(profileId: string): void {
@@ -124,18 +163,49 @@ export class ProfileWindowManager {
     for (const id of this.openIds()) this.close(id)
   }
 
-  /** Memory and window counts, to judge whether raising the window limit is safe. */
+  /**
+   * Memory and window counts, to judge whether raising the window limit is safe.
+   * Per-profile numbers cover the page processes of that profile's tabs, matched by process id;
+   * browser, GPU, network, toolbar and dashboard processes are reported as shared.
+   * Measured only when asked for (no background polling).
+   */
   resourceUsage(): ResourceUsage {
     const metrics = app.getAppMetrics()
-    const totalKb = metrics.reduce((sum, m) => sum + (m.memory?.workingSetSize ?? 0), 0)
+    const owners = [...this.windows.entries()].map(([profileId, entry]) => ({
+      profileId,
+      pids: entry.tabs
+        .values()
+        .filter((t) => !t.view.webContents.isDestroyed())
+        .map((t) => t.view.webContents.getOSProcessId())
+    }))
+    const attribution = attributeMemory(
+      metrics.map((m) => ({ pid: m.pid, memoryKb: m.memory?.workingSetSize ?? 0 })),
+      owners
+    )
+    const statuses = this.statuses()
     let openTabs = 0
-    for (const entry of this.windows.values()) openTabs += entry.tabs.size
+    const profiles: ProfileResourceUsage[] = []
+    for (const [profileId, entry] of this.windows) {
+      openTabs += entry.tabs.size
+      const usage = attribution.perProfile.get(profileId) ?? { memoryMb: 0, processCount: 0 }
+      profiles.push({
+        profileId,
+        name: entry.profile.name,
+        status: statusOf(statuses, profileId),
+        tabs: entry.tabs.size,
+        memoryMb: usage.memoryMb,
+        processCount: usage.processCount
+      })
+    }
     return {
-      totalMemoryMb: Math.round(totalKb / 1024),
+      totalMemoryMb: attribution.totalMb,
       processCount: metrics.length,
       openWindows: this.windows.size,
       openTabs,
-      maxOpenProfiles: this.deps.settings.get().maxOpenProfiles
+      maxOpenProfiles: this.deps.settings.get().maxOpenProfiles,
+      sharedMemoryMb: attribution.sharedMb,
+      profiles: profiles.sort((a, b) => b.memoryMb - a.memoryMb),
+      measuredAt: new Date().toISOString()
     }
   }
 
@@ -172,6 +242,7 @@ export class ProfileWindowManager {
       return
     }
     const { activeId } = entry.tabs.remove(tabId)
+    if (tab.crashed) this.notifyStatuses()
     if (entry.shownTabId === tabId) {
       if (!entry.window.isDestroyed()) entry.window.contentView.removeChildView(tab.view)
       entry.shownTabId = null
@@ -273,6 +344,7 @@ export class ProfileWindowManager {
     }
     this.windows.set(profileId, entry)
     this.deps.onOpenProfilesChanged(this.openIds())
+    this.notifyStatuses()
 
     const layout = (): void => this.layout(entry)
     window.on('resize', layout)
@@ -290,6 +362,7 @@ export class ProfileWindowManager {
       }
       void this.deps.sessions.flush(profile.partition)
       this.deps.onOpenProfilesChanged(this.openIds())
+      this.notifyStatuses()
       this.deps.logger.info(`Closed profile window ${profileId}`)
     })
 
@@ -438,7 +511,10 @@ export class ProfileWindowManager {
 
     contents.on('did-start-loading', () => {
       tab.error = null
-      tab.crashed = false
+      if (tab.crashed) {
+        tab.crashed = false
+        this.notifyStatuses()
+      }
       push()
     })
     contents.on('did-stop-loading', push)
@@ -454,7 +530,11 @@ export class ProfileWindowManager {
       if (details.reason === 'clean-exit') return
       tab.crashed = true
       tab.error = `This tab stopped unexpectedly (${details.reason}). Press Reload to try again.`
-      this.deps.logger.warn(`Tab renderer gone in profile ${entry.profile.id}: ${details.reason}`)
+      // Reason and exit code only — never the URL, which can contain tokens.
+      this.deps.logger.warn(
+        `Tab renderer gone in profile ${entry.profile.id}: ${details.reason} (exit code ${details.exitCode})`
+      )
+      this.notifyStatuses()
       push()
     })
     contents.on('unresponsive', () => {

@@ -8,13 +8,60 @@ Built with Electron, React + TypeScript + Vite, SQLite (sql.js), and packaged wi
 ## Features
 
 ### Profiles and sessions
-- **Dashboard** — profile counts, open windows, recently used profiles.
-- **All Profiles** — create, edit, delete and search profiles (name, notes, proxy host). Supports
-  hundreds of saved profiles (tested with 100).
+- **Dashboard** — profile, running, group and proxy counts, recently used profiles.
 - **Isolated sessions** — each profile uses a unique persistent Electron partition
   (`persist:profile-<uuid>`). Logins and cookies survive app restarts and are never shared between
   profiles. A deleted profile's partition is never reused.
-- **Backup & Restore** — export profiles and settings to JSON and restore them later.
+
+### Profile Manager (Phase 3)
+- **Table and card views** of all profiles with a live status for each one (Closed, Starting,
+  Running, Crashed) and the number of running profiles.
+- **Search** (name, notes, proxy host, group, tags) and **filters** by group, tag and status.
+- **Sorting** by name, creation date, group, status or last opened (ascending/descending).
+- **Selection checkboxes** and a bulk action bar: Open, Close, Move to group, Add/remove tags,
+  Export, Delete. Every bulk action ends with a summary of what succeeded and what failed (and why).
+  - *Open* goes through the same window coordinator as a single Open, so it never exceeds the
+    open-window limit; profiles over the limit are reported as not opened.
+  - *Delete* asks which kind of deletion you want: **Remove from list only** (browser data stays on
+    disk) or **Remove and delete browser data** (that profile's own partition folder only). Open
+    profiles are never deleted.
+- **Keyboard**: `/` or **Ctrl+F** search, **Ctrl+N** new profile, **Ctrl+A** select all shown,
+  **Space** select, **Enter** open, **Del** delete selected, arrow keys move between rows, **Esc**
+  clears the selection.
+- Empty, loading and error states, confirmation dialogs, and a layout that adapts down to 1024 px wide.
+
+### Bulk creation wizard (Phase 3)
+Create **1–100 profiles at once**:
+1. **Setup** — name template with `{number}` (e.g. `Shop-{number}`), start number, zero padding,
+   optional template, group, tags, start page, and proxy *copied from an existing profile you pick*
+   (the password is copied encrypted; it is never shown).
+2. **Preview** — every name is listed; names that already exist, repeat within the batch or are
+   invalid are flagged and creation is blocked until they are fixed.
+3. **Create** — progress bar and a summary. Each profile is written in its own database
+   transaction with a new unique id and partition. If some fail, **Retry failed** retries only
+   those; names that now exist are reported, never duplicated. Created profiles are **not opened**.
+
+### Groups, tags and templates (Phase 3)
+- **Groups**: create, rename (with color), delete. A profile is in at most one group. Deleting a
+  group never deletes profiles — they become *Ungrouped*.
+- **Tags**: any number of tags per profile (up to 20), case-insensitive without duplicates; rename
+  and delete tags from the Groups & Tags page.
+- **Templates**: reusable defaults (notes, color, start page, group, tags, and optionally "copy the
+  proxy from profile X"). Create, edit, duplicate, delete, and apply them in the profile form or the
+  bulk wizard. Templates never contain cookies, sessions, tokens or proxy passwords; a template
+  whose group or proxy source was removed is flagged instead of silently applied.
+
+### Language
+English (default) and **Bangla (বাংলা)** — switch in Application Settings. Every dashboard string has
+a Bangla translation (checked by a unit test).
+
+### Backup & Restore
+- **Metadata backup (v2)**: profiles (names, notes, colors, start pages, groups, tags, proxy
+  addresses without passwords), groups, tags, templates and settings, saved as JSON with a
+  SHA-256 integrity digest. Restoring checks the format, size (5 MB) and digest and refuses a damaged
+  or modified file instead of partially restoring it. Groups are merged by name, name clashes are
+  renamed "(2)", and older v1 backups are still accepted. You can also export only selected profiles.
+- **Browser-data backup (cookies, logins, storage) is not implemented.** See Known limitations.
 
 ### Tabs (Phase 2)
 Each profile window has tabs. **All tabs in a window belong to that profile's session** — they
@@ -62,11 +109,13 @@ How the test protects you:
 - Tests run in a temporary in-memory session, so they never touch the profile's cookies.
 - Results, logs and error messages never contain the username or password.
 
-### Profile window management (Phase 2)
+### Profile window management
 - **Limit on open profile windows**: default **2**, configurable from 1 to 10 in
   Application Settings. The limit is applied when a window opens; it is not unlimited.
 - **Resource usage** panel (Application Settings) shows the app's total memory, process count, open
-  windows and tabs. Open your usual sites in the windows you have, check the numbers, then raise
+  windows and tabs, plus **memory per running profile** where it can be attributed reliably (a
+  process used by more than one profile is counted as *shared*). It is measured only when the page
+  opens or you press Refresh — there is no background polling. Open your usual sites in the windows you have, check the numbers, then raise
   the limit one step at a time. (In CI, two profile windows plus the dashboard used about 700 MB.)
 - **Duplicate launches**: opening a profile that is already open focuses its window; clicking Open
   twice quickly still creates just one window; starting the app a second time focuses the existing
@@ -85,6 +134,12 @@ How the test protects you:
 - Proxy passwords are encrypted with Windows DPAPI via Electron `safeStorage`, are never sent back to
   the UI, never written to logs (log lines are additionally passed through a redaction filter), and
   are not included in backups.
+- Deleting browser data only ever removes `Partitions\profile-<uuid>` of the profile being deleted.
+  The path is rebuilt from the partition name, checked to be inside the app's `Partitions` folder
+  (no `..`, separators or symlinks), so one profile's deletion cannot touch another's storage.
+- Backups are validated (size, schema, integrity digest) before anything is written.
+- Diagnostic logs record events, crash reasons and counts, never URLs, passwords, cookies, proxy
+  credentials or tokens. The app sends no telemetry and uploads nothing.
 
 ## Requirements
 
@@ -117,8 +172,9 @@ when you intend to change dependencies, and commit the updated `package-lock.jso
 | `npm run check` | Typecheck + lint + tests |
 | `npm run smoke` | Build, then run the end-to-end smoke test (see below) |
 | `npm run build:win` | Check, build and create **both** the Windows installer and portable EXE |
-| `npm run build:win:installer` | NSIS installer only |
-| `npm run build:win:portable` | Portable EXE only |
+| `npm run dist:win` | Build and create the NSIS installer |
+| `npm run dist:portable` | Build and create the portable EXE |
+| `npm run build:win:installer` / `build:win:portable` | Same as `dist:win` / `dist:portable` (kept for compatibility) |
 
 Windows builds are written to `release/<version>/`:
 
@@ -141,6 +197,11 @@ launches the real app twice with a temporary data folder. It checks, among other
 - proxy tests: success with the proxied IP, wrong/missing password, unreachable proxy, 3-second
   timeout, no credentials sent to the website, password-reuse rules for unsaved drafts
 - that the proxy username and password never appear in the log file
+- Profile Manager (through the real dashboard IPC): bulk wizard preview and creation of 25
+  profiles with unique partitions and no windows opened, retry without duplicates, groups, bulk
+  move and tag changes, templates, bulk open stopping at the window limit, status changes on a tab
+  crash and recovery, bulk delete with browser data removing only that profile's cookies, refusing to
+  delete an open profile, the Bangla UI, and group/tags/template/language restored after restart
 
 One optional check also contacts the real public IP services; it is reported but cannot fail the
 run, so a temporary internet problem doesn't break the build.
@@ -149,7 +210,7 @@ run, so a temporary internet problem doesn't break the build.
 
 `.github/workflows/ci.yml` runs on every push to `main` or `feature/**` and on pull requests, on a
 GitHub Windows runner with Node 24: `npm ci`, typecheck, lint, unit tests, build, the end-to-end
-smoke test, and the Windows EXE build. The EXEs are attached to the workflow run as the
+smoke test, and the Windows EXE builds (`npm run dist:win` and `npm run dist:portable`). The EXEs are attached to the workflow run as the
 `proxy-own-browser-windows` artifact (kept 14 days).
 
 ## Where data is stored
@@ -158,13 +219,23 @@ smoke test, and the Windows EXE build. The EXEs are attached to the workflow run
 
 | Path | Contents |
 | --- | --- |
-| `data\profiles.sqlite` | Profile list, proxy settings (passwords encrypted), app settings |
+| `data\profiles.sqlite` | Profiles, groups, tags, templates, proxy settings (passwords encrypted), app settings |
+| `data\profiles.sqlite.pre-v2-<time>.bak` | Copy of the database made automatically before an upgrade migration |
 | `Partitions\profile-<uuid>\` | Each profile's cookies, storage and cache |
 | `logs\app.log` | Application log (no credentials) |
 
 Set the `POB_USER_DATA_DIR` environment variable to use a different data folder.
 
 None of these files are committed to Git (see `.gitignore`).
+
+### Database migrations
+The schema version is stored in SQLite (`PRAGMA user_version`). Version 0.3.0 upgrades the database
+from schema 1 to 2 by **adding** the `groups`, `tags`, `profile_tags` and `templates` tables and a
+`group_id` column on profiles; existing profiles, proxy settings, partitions and settings are kept
+unchanged. Before migrating, the app copies the database to `profiles.sqlite.pre-v2-<time>.bak`.
+If a migration fails, the file is left untouched and the app shows the error instead of starting
+with an empty list. A database created by a newer version of the app is refused rather than
+modified.
 
 ## Project structure
 
@@ -175,10 +246,12 @@ src/
     smokeTest.ts             End-to-end self test (only runs when POB_SMOKE_TEST is set)
     electron/                Electron-specific code: windows & tabs, sessions, proxy tester, IPC, cipher
     services/                Pure logic (unit-tested): SQLite, profiles, settings, backup, logger,
-                             proxy test runner, tab list, window open coordinator
+                             proxy test runner, tab list, window open coordinator, groups/tags
+                             (catalogService), templates, bulk creation and bulk runner,
+                             metadata backup, managed partition paths, status and memory attribution
   preload/                   One sandboxed preload; each app page gets only its own API
   renderer/
-    dashboard/               React dashboard (5 sections)
+    dashboard/               React dashboard (7 sections), bulk wizard, English/Bangla strings
     browser/                 React tab strip + toolbar at the top of each profile window
   shared/                    Types, validation, URL and proxy helpers used by all processes
 tests/                       Vitest unit tests
@@ -200,6 +273,10 @@ scripts/smoke-fixtures.mjs   Local proxy/endpoint servers used only by the smoke
 | "Only N profile window(s) can be open" | Close a profile window or raise the limit in Application Settings (watch Resource usage). |
 | A tab shows "stopped unexpectedly" | Press Reload. If it keeps happening, close the tab and check memory in Resource usage. |
 | Proxy passwords stopped working after moving to another PC | Passwords are encrypted for the original Windows user; enter them again. |
+| Bulk open says "Only N profile window(s) can be open" for some profiles | Expected: bulk open respects the window limit. Close windows or raise the limit. |
+| Restore says the backup is **damaged or was modified** | The file was edited or truncated; the integrity digest no longer matches. Use an unmodified backup. |
+| App says the database is from a **newer version** | You opened data from a newer app version. Update the app; the data was not changed. |
+| Delete reports "browser data partially removed" | Chromium still had a file open. The data is cleared; an empty folder may remain until restart. |
 | Need logs for a bug report | Application Settings → Open data folder → `logs\app.log` (contains no credentials). |
 
 ## Known limitations
@@ -218,8 +295,13 @@ scripts/smoke-fixtures.mjs   Local proxy/endpoint servers used only by the smoke
   the app closes. Normal "remember me" logins persist.
 - **Website HTTP basic-auth dialogs are not shown** (proxy authentication is handled automatically).
 - Website permission requests (camera, microphone, location, notifications) are denied.
-- **Backups do not include cookies or passwords.** Restored profiles start logged out and need their
-  proxy password re-entered.
+- **Encrypted browser-data backup is not implemented.** Backups contain metadata only — no cookies,
+  logins, site storage or proxy passwords. Restored profiles start logged out and need their proxy
+  password re-entered. (Chromium keeps a profile's files open while the app runs, so a safe restore
+  needs a restart-staged design; it was left out rather than shipped half-working.)
+- Per-profile memory is an attribution of renderer processes; GPU, network and browser processes
+  are shared and shown as such, so per-profile numbers do not add up to the total.
+- Bulk actions run one profile after another; very large selections take a few seconds.
 - Proxy passwords are encrypted for the current Windows user. If the database is copied to another
   PC or user account, passwords must be entered again.
 - If an open profile is deleted it must be closed first. When "delete browsing data" is chosen,
