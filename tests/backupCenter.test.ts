@@ -221,6 +221,26 @@ describe('local backup and restore', () => {
     expect(readdirSync(join(t.userData, 'Partitions', '.pob-work', 'journal'))).toEqual([])
   })
 
+  it('cleans up leftover staging folders at start-up and never applies a restore to a profile in use', async () => {
+    const a = t.app.service.create({ name: 'Alpha' })
+    t.seed(a.partition, 'v1')
+    const [outcome] = await t.center.backupFull([a.id], PASSWORD)
+    t.loaded.add(a.partition)
+    await t.center.restore({ path: join(t.folder, outcome!.fileName!), target: 'original', password: PASSWORD })
+    const leftover = workPath(t.userData, 'staging', 'restore-crashed')
+    mkdirSync(leftover, { recursive: true })
+    writeFileSync(join(leftover, 'x'), 'partial')
+    // The profile is (unexpectedly) still in use: the task is not applied, its prepared data and
+    // the unrelated leftover are removed, and the profile's data is untouched.
+    t.seed(a.partition, 'current')
+    const notes = await t.center.runPendingJobs()
+    expect(notes.join()).toMatch(/failed/)
+    const staging = join(t.userData, 'Partitions', '.pob-work', 'staging')
+    expect(existsSync(leftover)).toBe(false)
+    expect(readdirSync(staging)).toHaveLength(0)
+    expect(t.cookieOf(a.partition)).toBe('current')
+  })
+
   it('ignores a journal that points outside the managed folder', async () => {
     const outside = join(t.dir.path, 'outside')
     mkdirSync(outside)

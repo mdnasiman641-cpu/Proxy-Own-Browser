@@ -808,7 +808,34 @@ export class BackupCenter {
         this.finishJob(job.id, 'failed', message)
       }
     }
+    await this.removeOrphanedStaging()
     return notes
+  }
+
+  /**
+   * Removes staging folders no pending task needs (left by a crash during extraction, or by a
+   * task whose profile was deleted). They only ever hold copies made by this app.
+   */
+  private async removeOrphanedStaging(): Promise<void> {
+    const dir = workDir(this.deps.userDataPath, 'staging')
+    if (!existsSync(dir)) return
+    const needed = new Set<string>()
+    for (const job of this.deps.db.all<JobRow>(`SELECT * FROM jobs WHERE status = 'pending'`)) {
+      try {
+        const staged = (JSON.parse(job.payload) as { staged?: string }).staged
+        if (staged) needed.add(resolve(staged))
+      } catch {
+        /* ignore */
+      }
+    }
+    for (const name of await readdir(dir)) {
+      const path = resolve(dir, name)
+      if (needed.has(path)) continue
+      if ((await lstat(path)).isSymbolicLink()) continue
+      await rm(path, { recursive: true, force: true }).catch((error) =>
+        this.deps.logger.warn(`Could not remove leftover staging folder ${name}`, error)
+      )
+    }
   }
 
   // ------------------------------------------------------------------ history
