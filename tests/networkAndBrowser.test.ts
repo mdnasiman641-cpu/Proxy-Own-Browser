@@ -96,7 +96,14 @@ describe('browser settings', () => {
     const parsed = parseStoredBrowserConfig({ zoomPercent: 9999, language: 'bn-BD', permissions: { media: 'allow', camera: 'allow' } })
     expect(parsed.zoomPercent).toBe(100)
     expect(parsed.language).toBe('bn-BD')
-    expect(parsed.permissions).toEqual({ ...DEFAULT_BROWSER_CONFIG.permissions, media: 'allow' })
+    // The earlier combined "media" permission becomes camera and microphone.
+    expect(parsed.permissions).toEqual({ ...DEFAULT_BROWSER_CONFIG.permissions, camera: 'allow', microphone: 'allow' })
+    // A language saved before language modes existed means manual mode.
+    expect(parsed.languageMode).toBe('manual')
+    expect(parseStoredBrowserConfig({}).languageMode).toBe('default')
+    expect(parseStoredBrowserConfig({ userAgent: 'custom' }).userAgent).toBe('default')
+    expect(parseStoredBrowserConfig({ geolocationMode: 'manual', geoLatitude: 10 }).geolocationMode).toBe('off')
+    expect(parseStoredBrowserConfig({ permissions: { geolocation: 'ask' } }).permissions.geolocation).toBe('ask')
     // Manual mode without a zone is not usable; it falls back to "off".
     expect(parseStoredBrowserConfig({ timezoneMode: 'manual' }).timezoneMode).toBe('off')
   })
@@ -396,6 +403,40 @@ describe('IP location caching, rotation and isolation', () => {
     expect(app.service.update(manual.id, { proxy: PROXY }).browser.timezoneMode).toBe('manual')
     const explicitOff = app.service.create({ name: 'Off', proxy: PROXY, browser: { timezoneMode: 'off' } })
     expect(explicitOff.browser.timezoneMode).toBe('off')
+  })
+})
+
+describe('language and geolocation from the verified proxy location', () => {
+  it('applies automatic language and geolocation from the proxy’s own exit IP, per profile', async () => {
+    const app = await networkApp()
+    const geoWith = (ip: string, countryCode: string, lat: number, lon: number, tz: string): GeoLookupResult => ({
+      status: 'success',
+      message: 'Located',
+      data: { ...geoOk(ip, tz).data!, countryCode, latitude: lat, longitude: lon }
+    })
+    const a = app.service.create({ name: 'A', proxy: PROXY, browser: { timezoneMode: 'auto', languageMode: 'auto', geolocationMode: 'auto' } })
+    const b = app.service.create({ name: 'B', proxy: { ...PROXY, host: '10.0.0.2' }, browser: { timezoneMode: 'auto', languageMode: 'auto', geolocationMode: 'auto' } })
+    app.fake.answer({ proxy: proxyOk('203.0.113.7'), geo: geoWith('203.0.113.7', 'BD', 23.8, 90.4, 'Asia/Dhaka') })
+    const planA = await app.network.planLaunch(a.id)
+    app.fake.answer({ proxy: proxyOk('198.51.100.9'), geo: geoWith('198.51.100.9', 'DE', 52.5, 13.4, 'Europe/Berlin') })
+    const planB = await app.network.planLaunch(b.id)
+    expect(planA).toMatchObject({ timezone: 'Asia/Dhaka', locale: 'bn-BD', acceptLanguage: 'bn-BD,bn,en', geolocation: { latitude: 23.8, longitude: 90.4 } })
+    expect(planB).toMatchObject({ timezone: 'Europe/Berlin', locale: 'de-DE', geolocation: { latitude: 52.5, longitude: 13.4 } })
+
+    // The summary preview of a closed profile uses only stored results (no request).
+    const calls = app.fake.calls.length
+    expect(app.network.previewPlan(a.id)).toMatchObject({ timezone: 'Asia/Dhaka', timezoneSource: 'auto', locale: 'bn-BD', geolocationSource: 'auto' })
+    expect(app.fake.calls.length).toBe(calls)
+
+    // A failed lookup keeps the last valid location for this proxy, with a warning.
+    app.fake.answer({ proxy: proxyOk('203.0.113.7'), geo: { status: 'failed', message: 'service down', data: null } })
+    const kept = await app.network.planLaunch(a.id)
+    expect(kept.locale).toBe('bn-BD')
+    expect(kept.geolocation).toMatchObject({ latitude: 23.8 })
+
+    // After a proxy change nothing from the old proxy is used.
+    app.service.update(a.id, { proxy: { ...PROXY, host: '10.0.0.9' } })
+    expect(app.network.previewPlan(a.id)).toMatchObject({ timezone: null, locale: null, geolocation: null })
   })
 })
 

@@ -5,10 +5,8 @@ import { Icon } from '../../common/Icon'
 import { errorMessage, unwrap } from '../../common/ipc'
 import { StatusBadge } from '../components/Bits'
 import { LocalTime } from '../components/LocalTime'
-import { Modal } from '../components/Modal'
 import { ProfileAvatar } from '../components/ProfileBadge'
-import { ProfileForm } from '../components/ProfileForm'
-import { useSharedProxyGuard } from '../components/SharedProxyGuard'
+import { useProfileEditor } from '../components/editor/ProfileEditor'
 import { useI18n } from '../i18n'
 import type { TKey } from '../strings'
 import type { AppData } from '../useAppData'
@@ -25,11 +23,10 @@ const MODE_LABEL: Record<Profile['browser']['timezoneMode'], TKey> = {
  */
 export function ProxyPage({ data, onOpenDetails }: { data: AppData; onOpenDetails: (id: string) => void }) {
   const { t, formatDate } = useI18n()
-  const [editing, setEditing] = useState<Profile | null>(null)
+  const { openEditor } = useProfileEditor()
   const [checking, setChecking] = useState<Set<string>>(() => new Set())
   const [errors, setErrors] = useState<Record<string, string>>({})
   const [refreshingAll, setRefreshingAll] = useState(false)
-  const { guard, dialog: sharedDialog } = useSharedProxyGuard()
   const status = (id: string) => data.statuses[id] ?? 'closed'
 
   const refresh = async (profile: Profile): Promise<void> => {
@@ -189,7 +186,7 @@ export function ProxyPage({ data, onOpenDetails }: { data: AppData; onOpenDetail
                           className="icon-button"
                           title={t('proxyPage.configure')}
                           aria-label={`${t('proxyPage.configure')}: ${profile.name}`}
-                          onClick={() => setEditing(profile)}
+                          onClick={() => openEditor(profile.id, 'proxy')}
                         >
                           <Icon name="edit" />
                         </button>
@@ -204,24 +201,6 @@ export function ProxyPage({ data, onOpenDetails }: { data: AppData; onOpenDetail
         </div>
       )}
 
-      {editing && (
-        <Modal title={t('proxyPage.modalTitle', { name: editing.name })} onClose={() => setEditing(null)}>
-          <ProfileForm
-            initial={editing}
-            mode="proxy"
-            submitLabel={t('form.saveProxy')}
-            onCancel={() => setEditing(null)}
-            onSubmit={(input) =>
-              guard(async (options) => {
-                const profile = await data.updateProfile(editing.id, input, options)
-                data.notify('success', t('profiles.saved', { name: profile.name }))
-                setEditing(null)
-              })
-            }
-          />
-          {sharedDialog}
-        </Modal>
-      )}
     </section>
   )
 }

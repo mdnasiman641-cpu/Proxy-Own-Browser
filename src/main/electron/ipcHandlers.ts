@@ -5,6 +5,7 @@ import {
   app,
   dialog,
   ipcMain,
+  screen,
   shell,
   type BrowserWindow,
   type IpcMainInvokeEvent
@@ -22,6 +23,7 @@ import type {
   ProxyInput,
   ProxyTestResult,
   RuntimeInfo,
+  ProfileEffectiveConfig,
   TemplateInput
 } from '@shared/types'
 import { DEFAULT_STUN_SERVER } from '@shared/diagnostics'
@@ -51,6 +53,10 @@ import {
   profileUpdateSchema
 } from '@shared/validation'
 import type { BackupCenter } from '../services/backupCenter'
+import type { ExtensionStore } from '../services/extensionStore'
+import type { ExtensionLoader } from './extensionLoader'
+import type { ProfileDataService } from './profileData'
+import { userAgentConflict } from '@shared/browserConfig'
 import { buildDiagnostics } from '../services/diagnostics'
 import { BACKUP_FORMAT, MAX_BACKUP_BYTES, parseBackup } from '../services/backupService'
 import { BackupError } from '../services/fullBackupArchive'
@@ -68,7 +74,7 @@ import type { SettingsService } from '../services/settingsService'
 import { isAppFrame } from './pages'
 import type { ProfileWindow, ProfileWindowManager } from './profileWindows'
 import type { ProxyTester } from './proxyTester'
-import { defaultUserAgent, plainChromeUserAgent, type SessionManager } from './sessionManager'
+import { defaultUserAgent, plainChromeUserAgent, userAgentFor, type SessionManager } from './sessionManager'
 
 export interface IpcDeps {
   profiles: ProfileService
@@ -92,6 +98,9 @@ export interface IpcDeps {
   startupNotes: string[]
   notifyNetworkStatus: (profileId: string) => void
   sendBackupProgress: (progress: BackupProgress) => void
+  extensions: ExtensionStore
+  extensionLoader: ExtensionLoader
+  profileData: ProfileDataService
 }
 
 const proxyEndpointSchema = z
@@ -228,6 +237,8 @@ export function registerIpcHandlers(deps: IpcDeps): void {
     }
     const removed = profiles.delete(profileId)
     if (clearData) await deps.sessions.clearData(removed.partition)
+    // The profile's own extension copies are removed with it.
+    await deps.extensions.removeAll(removed.id).catch((error) => logger.warn('Could not remove the extensions of a deleted profile', error))
     logger.info(`Deleted profile ${removed.id} (session data ${clearData ? 'cleared' : 'kept'})`)
     deps.notifyProfilesChanged()
   })
@@ -517,10 +528,12 @@ export function registerIpcHandlers(deps: IpcDeps): void {
     return result
   })
 
-  dashboard(DashboardChannels.checkNetwork, async (id) => {
+  dashboard(DashboardChannels.checkNetwork, async (id, options) => {
     const profileId = parseOrThrow(profileIdSchema, id)
-    // The user's "Refresh IP & location": always asks the location service again.
-    const status = await deps.network.check(profileId, { force: true })
+    const { force } = parseOrThrow(z.object({ force: z.boolean().optional() }).strict(), options ?? {})
+    // "Refresh IP & location" (default) always asks the location service again; "Refresh IP"
+    // (force: false) reuses the location while the exit IP is unchanged.
+    const status = await deps.network.check(profileId, { force: force ?? true })
     deps.notifyNetworkStatus(profileId)
     return status
   })
@@ -570,10 +583,136 @@ export function registerIpcHandlers(deps: IpcDeps): void {
         cpuModel: cpu[0]?.model?.trim() ?? 'unknown',
         cpuCores: cpu.length,
         totalMemoryMb: Math.round(totalmem() / 1048576),
-        freeMemoryMb: Math.round(freemem() / 1048576)
+        freeMemoryMb: Math.round(freemem() / 1048576),
+        screen: (() => {
+          const primary = screen.getPrimaryDisplay()
+          return {
+            width: primary.size.width,
+            height: primary.size.height,
+            scaleFactor: primary.scaleFactor,
+            displays: screen.getAllDisplays().length
+          }
+        })()
       }
     }
   })
+
+  // ---------- advanced profile settings ----------
+  dashboard(DashboardChannels.effectiveConfig, (id): ProfileEffectiveConfig => {
+    const profileId = parseOrThrow(profileIdSchema, id)
+    const profile = profiles.get(profileId)
+    const open = windows.isOpen(profileId)
+    const applied = open ? windows.emulationFor(profileId) : null
+    const preview = deps.network.previewPlan(profileId)
+    const userAgent = userAgentFor(profile)
+    const report = windows.launchReport(profileId)
+    const timezone = applied
+      ? { value: applied.timezone, source: applied.timezone ? preview.timezoneSource : ('off' as const), note: null }
+      : { value: preview.timezone, source: preview.timezoneSource, note: preview.timezoneNote }
+    const geolocation = applied ? applied.geolocation : preview.geolocation
+    return {
+      profileId,
+      open,
+      userAgent,
+      userAgentConflict: profile.browser.userAgent === 'custom' ? userAgentConflict(userAgent, defaultUserAgent()) : null,
+      timezone,
+      language: applied
+        ? { locale: applied.locale, acceptLanguage: applied.acceptLanguage, source: preview.languageSource }
+        : { locale: preview.locale, acceptLanguage: preview.acceptLanguage, source: preview.languageSource },
+      geolocation: geolocation
+        ? { ...geolocation, source: profile.browser.geolocationMode === 'manual' ? 'manual' : 'auto' }
+        : null,
+      warnings: preview.warnings,
+      launchReport: report
+    }
+  })
+
+  dashboard(DashboardChannels.launchReport, (id) => windows.launchReport(parseOrThrow(profileIdSchema, id)))
+
+  dashboard(DashboardChannels.reopenProfile, async (id) => {
+    const profileId = parseOrThrow(profileIdSchema, id)
+    if (!windows.isOpen(profileId)) throw new ValidationError('This profile is not open.')
+    await windows.reopen(profileId)
+    logger.info(`Reopened profile window ${profileId} to apply start-up settings`)
+  })
+
+  dashboard(DashboardChannels.exportProfileConfig, async (id) => {
+    const profileId = parseOrThrow(profileIdSchema, id)
+    const profile = profiles.get(profileId)
+    const backup = deps.backups.buildBackup(app.getVersion(), [profileId])
+    const date = new Date().toISOString().slice(0, 10)
+    const safeName = profile.name.replace(/[^\p{L}\p{N}_-]+/gu, '-').slice(0, 40) || 'profile'
+    const filePath = await saveJson('Export profile configuration', `POB_config_${safeName}_${date}.json`, backup)
+    if (!filePath) return { saved: false }
+    logger.info(`Exported the configuration of profile ${profileId}`)
+    return { saved: true, filePath }
+  })
+
+  dashboard(DashboardChannels.chooseDownloadFolder, async () => {
+    const options = { title: 'Choose the download folder for this profile', properties: ['openDirectory' as const, 'createDirectory' as const] }
+    const parent = deps.getDashboard()
+    const choice = parent ? await dialog.showOpenDialog(parent, options) : await dialog.showOpenDialog(options)
+    const folder = choice.filePaths[0]
+    return choice.canceled || !folder ? null : folder
+  })
+
+  dashboard(DashboardChannels.listExtensions, (id) => deps.extensions.list(profiles.get(parseOrThrow(profileIdSchema, id)).id))
+
+  dashboard(DashboardChannels.addExtension, async (id) => {
+    const profileId = profiles.get(parseOrThrow(profileIdSchema, id)).id
+    const options = { title: 'Choose an unpacked extension folder (with manifest.json)', properties: ['openDirectory' as const] }
+    const parent = deps.getDashboard()
+    const choice = parent ? await dialog.showOpenDialog(parent, options) : await dialog.showOpenDialog(options)
+    const folder = choice.filePaths[0]
+    if (choice.canceled || !folder) return null
+    return addExtensionFrom(profileId, folder)
+  })
+
+  /** Copies the extension into the profile and, if the profile is open, loads it right away. */
+  async function addExtensionFrom(profileId: string, folder: string) {
+    const { extension, warnings } = await deps.extensions.add(profileId, folder)
+    let loadError: string | null = null
+    if (windows.isOpen(profileId)) {
+      loadError = await deps.extensionLoader.loadOne(deps.sessions.sessionFor(profiles.get(profileId).partition), extension)
+    }
+    logger.info(`Installed an extension into profile ${profileId}${loadError ? ' (load failed)' : ''}`)
+    return { extension: deps.extensions.get(profileId, extension.id), warnings, loadError }
+  }
+
+  dashboard(DashboardChannels.setExtensionEnabled, async (id, extensionId, enabled) => {
+    const profile = profiles.get(parseOrThrow(profileIdSchema, id))
+    const extId = parseOrThrow(z.uuid(), extensionId)
+    const on = parseOrThrow(z.boolean(), enabled)
+    let extension = deps.extensions.setEnabled(profile.id, extId, on)
+    if (windows.isOpen(profile.id)) {
+      const ses = deps.sessions.sessionFor(profile.partition)
+      if (on) await deps.extensionLoader.loadOne(ses, extension)
+      else deps.extensionLoader.unloadOne(ses, extension)
+      extension = deps.extensions.get(profile.id, extId)
+    }
+    return extension
+  })
+
+  dashboard(DashboardChannels.removeExtension, async (id, extensionId) => {
+    const profile = profiles.get(parseOrThrow(profileIdSchema, id))
+    const extId = parseOrThrow(z.uuid(), extensionId)
+    const extension = deps.extensions.get(profile.id, extId)
+    if (windows.isOpen(profile.id)) deps.extensionLoader.unloadOne(deps.sessions.sessionFor(profile.partition), extension)
+    await deps.extensions.remove(profile.id, extId)
+    logger.info(`Removed an extension from profile ${profile.id}`)
+  })
+
+  dashboard(DashboardChannels.storageInfo, (id) => deps.profileData.storageInfo(parseOrThrow(profileIdSchema, id)))
+
+  dashboard(DashboardChannels.listCookies, (id) => deps.profileData.cookies(parseOrThrow(profileIdSchema, id)))
+
+  dashboard(DashboardChannels.clearProfileData, (id, kind, origin) =>
+    deps.profileData.clear(
+      parseOrThrow(profileIdSchema, id),
+      parseOrThrow(z.enum(['cookies', 'cache', 'site', 'all']), kind),
+      parseOrThrow(z.string().max(2048).nullable(), origin ?? null)
+    )
+  )
 
   // ---------- local backups ----------
   /**

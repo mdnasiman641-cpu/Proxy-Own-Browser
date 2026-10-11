@@ -1,5 +1,6 @@
 import { z } from 'zod'
 import { browserConfigUpdateSchema } from './browserConfig'
+import { profileOptionsUpdateSchema } from './profileOptions'
 import { PROXY_PROTOCOLS, SEARCH_ENGINES, UI_LANGUAGES, type SearchEngineId } from './types'
 
 export const LIMITS = {
@@ -195,7 +196,8 @@ export const profileInputSchema = z.object({
   proxy: proxyInputSchema.optional(),
   groupId: groupIdSchema.nullable().optional(),
   tags: tagListSchema.optional(),
-  browser: browserConfigUpdateSchema.optional()
+  browser: browserConfigUpdateSchema.optional(),
+  options: profileOptionsUpdateSchema.optional()
 })
 
 export const profileUpdateSchema = z.object({
@@ -206,7 +208,8 @@ export const profileUpdateSchema = z.object({
   proxy: proxyInputSchema.optional(),
   groupId: groupIdSchema.nullable().optional(),
   tags: tagListSchema.optional(),
-  browser: browserConfigUpdateSchema.optional()
+  browser: browserConfigUpdateSchema.optional(),
+  options: profileOptionsUpdateSchema.optional()
 })
 
 export const saveProfileOptionsSchema = z

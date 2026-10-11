@@ -56,6 +56,37 @@ Built with Electron, React + TypeScript + Vite, SQLite (sql.js), and packaged wi
 > undetectable — websites can still recognise browsers in other ways. This app does not try to
 > hide that it is a browser or bypass website security checks.
 
+### Advanced profile editor (0.7.0)
+**Edit** on any profile (profile list, details page, or the pencil on *Proxies & location*) opens a
+full-screen editor: categories on the left, the selected category's settings in the middle
+(scrolling on its own), a live **configuration summary** on the right, and **Save / Cancel**
+always visible. It validates every field, marks categories with errors, warns about unsaved
+changes (Ctrl+S saves), and is fully translated into Bangla and English. Settings are saved
+together; extensions, site data and diagnostics act immediately and say so.
+
+| Category | What you can set or see |
+| --- | --- |
+| General | Name, stable profile ID (copy), status, purpose label, icon (emoji), color, group, tags, notes, created / last-opened / updated times, *ask before opening* |
+| Proxy | HTTP, HTTPS, SOCKS4, SOCKS5; host, port, username, password (encrypted, never shown), bypass list, proxy label and notes; paste `host:port:user:pass`; Test, Remove, *Refresh IP*, *Refresh IP & location*; connection status, verified public IP, country/region/city, ISP/organization, detected time zone, last successful verification and errors |
+| Privacy & Network | Time zone off / automatic (proxy IP) / manual with IANA picker, detected zone, last update and live local time; geolocation off / automatic (proxy IP, city-level ±25 km) / manual coordinates; WebRTC network access; Do Not Track |
+| Browser & Navigator | Real Chromium / Electron / Node versions; User-Agent: installed default, plain Chrome of the same version, or custom (a custom value that names another Chrome version or OS is flagged — it never changes the engine); language default / automatic (from the proxy's country) / manual, Accept-Language list, effective values; window size and zoom; this PC's screen and platform (read-only) |
+| Hardware & Permissions | This PC's CPU, logical processors, memory and screen (real, read-only); what an open profile's pages report (`hardwareConcurrency`, `deviceMemory`, screen, `devicePixelRatio`, platform) — read on request; per-site permissions *Block / Ask / Allow* for notifications, camera, microphone, location, clipboard read, MIDI, idle detection and window management |
+| Extensions & Cookies | Unpacked extensions installed into this profile only (copied into the app's data folder, loaded into this profile's session when it opens); enable / disable / remove; storage folder and size; cookie list (names and domains, never values); clear cookies, cache, one site's data, or all website data — each after a confirmation that explains the effect |
+| Other / Advanced | Startup: start page, a list of startup URLs, or *restore previous tabs*; normal or maximized window; profile name in the window title; downloads ask or save to a chosen folder; export this profile's configuration |
+| Diagnostics | Test proxy, refresh IP / location, and the diagnostics panel (Passed / Warning / Failed / Unknown / Not tested) |
+
+When the profile opens, its saved configuration is applied to its own session and window only,
+and a **launch report** (in the summary) lists each setting as applied, not set, warning or
+failed. Settings that only take effect at start-up (startup pages, window size and mode) offer
+**Reopen window** when changed while the profile is open. Opening a profile that is already open
+focuses its window instead of starting a second copy.
+
+**Not supported (shown disabled with the reason):** custom browser launch arguments (they would
+apply to every profile and could weaken Electron's security settings), changing hardware values
+or screen size reported to sites, and installing from the Chrome Web Store or packed `.crx`
+files (this browser engine only loads unpacked extensions; toolbar buttons and pop-ups of
+extensions are not shown).
+
 ### Proxy status, public IP and location (Phase 4)
 - Every profile shows its assigned proxy and, after a check, **two separate results**:
   1. **Proxy connection** — working / failed (with the reason: invalid settings, rejected
@@ -406,6 +437,14 @@ If a migration fails, the file is left untouched and the app shows the error ins
 with an empty list. A database created by a newer version of the app is refused rather than
 modified.
 
+Version 0.7.0 upgrades schema 5 to 6, only **adding**: a `profile_options` column on profiles
+(JSON with its own `configVersion`; existing profiles get the defaults), the
+`profile_extensions` and `profile_last_tabs` tables, and the last valid location per proxy in
+`profile_network_status`. New browser settings (language mode, Accept-Language, custom
+User-Agent, geolocation, more permissions) live in the existing `browser_config` JSON; a value
+saved by an older version is read field by field (the earlier *camera & microphone* permission
+becomes both). Metadata backups now include the options; older backups restore with defaults.
+
 Version 0.6.0 upgrades schema 4 to 5, only **adding**: the last successful proxy test (time and
 exit IP) to `profile_network_status` (filled from existing successful results) and the list of
 profiles a multi-profile backup covered to `backup_history`. The WebRTC setting is stored in the
@@ -513,6 +552,13 @@ scripts/smoke-fixtures.mjs   Local proxy/endpoint servers used only by the smoke
    browser data); *Import metadata* merges such a file into another install.
 
 ## Known limitations
+
+- **Extensions**: only unpacked extensions; Electron supports a subset of the extension APIs, so
+  some extensions do not work. Their toolbar buttons and pop-ups are not shown.
+- **Geolocation** is given to pages only when the site is allowed to use the location; automatic
+  coordinates are the city-level location of the proxy's IP.
+- **Automatic language** maps the proxy's country to its most common browser language; countries
+  without a mapping use the app's language (the launch report says so).
 
 - **WebRTC through an HTTP or SOCKS proxy**: Chromium sends WebRTC's UDP traffic directly, not
   through the proxy. With *Chromium default* a STUN server (and so a website) can learn this PC's

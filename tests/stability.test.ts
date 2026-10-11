@@ -1,3 +1,4 @@
+import { DEFAULT_PROFILE_OPTIONS } from '../src/shared/profileOptions'
 import { existsSync, mkdirSync, symlinkSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
@@ -134,6 +135,7 @@ describe('profile filtering and sorting', () => {
     proxy: null,
     groupId: null,
     browser: DEFAULT_BROWSER_CONFIG,
+    options: DEFAULT_PROFILE_OPTIONS,
     tags: [],
     createdAt: '2026-01-01',
     updatedAt: '2026-01-01',

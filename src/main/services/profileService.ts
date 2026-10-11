@@ -1,4 +1,5 @@
 import { randomUUID } from 'node:crypto'
+import { statSync } from 'node:fs'
 import {
   DEFAULT_BROWSER_CONFIG,
   browserConfigProblem,
@@ -7,6 +8,13 @@ import {
   type BrowserConfig
 } from '@shared/browserConfig'
 import { partitionForProfile } from '@shared/partition'
+import {
+  DEFAULT_PROFILE_OPTIONS,
+  mergeProfileOptions,
+  parseStoredProfileOptions,
+  profileOptionsProblem,
+  type ProfileOptions
+} from '@shared/profileOptions'
 import { describeProxy, proxyEndpointKey } from '@shared/proxy'
 import type {
   DuplicateRequest,
@@ -58,6 +66,8 @@ export interface PortableProfile {
   tags?: string[]
   /** Browser settings (v3 backups). */
   browser?: BrowserConfig
+  /** Startup, window, download and label options (v3 backups from 0.7.0). */
+  options?: ProfileOptions
   /** When the profile was created (v3 backups; informational). */
   createdAt?: string
 }
@@ -72,6 +82,8 @@ export interface CreateOptions {
   allowSharedProxy?: boolean
   /** Start from these browser settings (duplicates and restores) before applying input.browser. */
   baseBrowserConfig?: BrowserConfig
+  /** Start from these options (duplicates and restores) before applying input.options. */
+  baseOptions?: ProfileOptions
 }
 
 /** What a proxy test should connect through. Credentials stay in the main process. */
@@ -173,6 +185,7 @@ export class ProfileService {
       proxyBypass: '',
       groupId: data.groupId ?? null,
       browserConfig: '{}',
+      profileOptions: '{}',
       createdAt: timestamp,
       updatedAt: timestamp,
       lastOpenedAt: null
@@ -187,6 +200,7 @@ export class ProfileService {
         ? { ...DEFAULT_BROWSER_CONFIG, timezoneMode: 'auto' as const }
         : DEFAULT_BROWSER_CONFIG)
     record.browserConfig = JSON.stringify(this.resolveBrowserConfig(base, data.browser))
+    record.profileOptions = JSON.stringify(this.resolveOptions(options.baseOptions ?? DEFAULT_PROFILE_OPTIONS, data.options))
     this.assertProxyAllowed(record, options.allowSharedProxy)
     // Profile row and its tags are written together, or not at all.
     this.repo.transaction(() => {
@@ -218,6 +232,9 @@ export class ProfileService {
       record.browserConfig = JSON.stringify(
         this.resolveBrowserConfig(parseStoredBrowserConfig(record.browserConfig), data.browser)
       )
+    }
+    if (data.options !== undefined) {
+      record.profileOptions = JSON.stringify(this.resolveOptions(parseStoredProfileOptions(record.profileOptions), data.options))
     }
     // When a proxy is configured for the first time, the time zone follows it automatically
     // (unless the user set a time zone mode in this same change or uses a manual time zone).
@@ -283,6 +300,7 @@ export class ProfileService {
       {
         proxySourceProfileId: data.copyProxy && profile.proxy ? source.id : null,
         baseBrowserConfig: profile.browser,
+        baseOptions: profile.options,
         allowSharedProxy: options.allowSharedProxy
       }
     )
@@ -305,10 +323,11 @@ export class ProfileService {
       .map((r) => ({ id: r.id, name: r.name }))
   }
 
-  /** Stores browser settings coming from a backup (already validated by the backup parser). */
-  replaceBrowserConfig(id: string, config: BrowserConfig): Profile {
+  /** Stores browser settings (and options) coming from a backup (already validated by the parser). */
+  replaceBrowserConfig(id: string, config: BrowserConfig, options?: ProfileOptions): Profile {
     const record = this.getRecord(id)
     record.browserConfig = JSON.stringify(parseStoredBrowserConfig(config))
+    if (options) record.profileOptions = JSON.stringify(parseStoredProfileOptions(options))
     record.updatedAt = this.now().toISOString()
     this.repo.update(record)
     return this.get(id)
@@ -381,6 +400,7 @@ export class ProfileService {
       groupId: profile.groupId,
       tags: profile.tags,
       browser: profile.browser,
+      options: profile.options,
       createdAt: profile.createdAt,
       name: profile.name,
       notes: profile.notes,
@@ -443,6 +463,18 @@ export class ProfileService {
     const next = update ? mergeBrowserConfig(base, update) : base
     const problem = browserConfigProblem(next)
     if (problem) throw new ValidationError(problem)
+    return next
+  }
+
+  private resolveOptions(base: ProfileOptions, update: ParsedProfileUpdate['options']): ProfileOptions {
+    const next = update ? mergeProfileOptions(base, update) : base
+    const problem = profileOptionsProblem(next)
+    if (problem) throw new ValidationError(problem)
+    // Checked when the folder is chosen or changed, so a folder that disappeared later never
+    // blocks saving other settings (downloads then fall back to asking where to save).
+    if (update?.downloadFolder && update.downloadFolder !== base.downloadFolder && !isFolder(update.downloadFolder)) {
+      throw new ValidationError('The download folder does not exist on this PC.')
+    }
     return next
   }
 
@@ -563,8 +595,17 @@ export function toProfile(record: ProfileRecord, tags: string[] = []): Profile {
     groupId: record.groupId,
     tags,
     browser: parseStoredBrowserConfig(record.browserConfig),
+    options: parseStoredProfileOptions(record.profileOptions),
     createdAt: record.createdAt,
     updatedAt: record.updatedAt,
     lastOpenedAt: record.lastOpenedAt
+  }
+}
+
+function isFolder(path: string): boolean {
+  try {
+    return statSync(path).isDirectory()
+  } catch {
+    return false
   }
 }

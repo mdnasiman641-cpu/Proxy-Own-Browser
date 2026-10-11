@@ -2,10 +2,11 @@ import type { WebContents } from 'electron'
 import type { Logger } from '../services/logger'
 
 /**
- * Time zone, locale and language for a profile's pages, applied with the Chrome DevTools
- * Protocol commands `Emulation.setTimezoneOverride`, `Emulation.setLocaleOverride` and
- * `Emulation.setUserAgentOverride` (Accept-Language only — the User-Agent stays the profile's
- * real one) through Electron's documented `webContents.debugger` API. This changes what
+ * Time zone, locale, language and geolocation for a profile's pages, applied with the Chrome
+ * DevTools Protocol commands `Emulation.setTimezoneOverride`, `Emulation.setLocaleOverride`,
+ * `Emulation.setUserAgentOverride` (Accept-Language with the profile's User-Agent) and
+ * `Emulation.setGeolocationOverride` through Electron's documented `webContents.debugger` API.
+ * Pages only receive the location when the profile also allows the site to use it. This changes what
  * JavaScript in the page sees (Date, Intl, navigator.language); it does not change the Windows
  * clock or any other application.
  */
@@ -16,13 +17,15 @@ export interface PageEmulation {
   userAgent: string
   /** Ordered language list for the profile language, e.g. "bn-BD,bn,en" (no q-values). */
   acceptLanguage: string | null
+  /** Coordinates navigator.geolocation reports; null leaves geolocation untouched. */
+  geolocation: { latitude: number; longitude: number; accuracy: number } | null
 }
 
 const state = new WeakMap<WebContents, PageEmulation>()
 
 /** True when no DevTools-protocol override is needed (only the User-Agent, set directly). */
 export function isEmpty(emulation: PageEmulation): boolean {
-  return !emulation.timezone && !emulation.locale
+  return !emulation.timezone && !emulation.locale && !emulation.geolocation && !emulation.acceptLanguage
 }
 
 async function send(contents: WebContents, emulation: PageEmulation): Promise<void> {
@@ -39,6 +42,11 @@ async function send(contents: WebContents, emulation: PageEmulation): Promise<vo
     'Emulation.setUserAgentOverride',
     emulation.acceptLanguage ? { userAgent: emulation.userAgent, acceptLanguage: emulation.acceptLanguage } : { userAgent: emulation.userAgent }
   )
+  if (emulation.geolocation) {
+    await dbg.sendCommand('Emulation.setGeolocationOverride', emulation.geolocation)
+  } else {
+    await dbg.sendCommand('Emulation.clearGeolocationOverride')
+  }
 }
 
 /**

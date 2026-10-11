@@ -38,6 +38,8 @@ export function useAppData() {
   const [reportedTimezones, setReportedTimezones] = useState<Record<string, BrowserTimezoneReport>>({})
   const [backups, setBackups] = useState<Record<string, ProfileBackupStatus>>({})
   const [startupNotes, setStartupNotes] = useState<string[]>([])
+  /** Profiles marked "ask before opening" that are waiting for the user's answer. */
+  const [pendingOpen, setPendingOpen] = useState<{ profiles: Profile[]; run: () => Promise<void> } | null>(null)
   const [loading, setLoading] = useState(true)
   const [loadError, setLoadError] = useState<string | null>(null)
   const [toasts, setToasts] = useState<Toast[]>([])
@@ -144,15 +146,29 @@ export function useAppData() {
     [refresh]
   )
 
-  const openProfile = useCallback(
-    async (profile: Profile) => {
-      try {
-        await unwrap(window.pob.openProfile(profile.id))
-      } catch (error) {
-        notify('error', errorMessage(error))
-      }
+  /**
+   * Runs `run` right away, or after confirmation when one of `profiles` is closed and marked
+   * "ask before opening".
+   */
+  const confirmOpening = useCallback(
+    async (profiles: Profile[], run: () => Promise<void>) => {
+      const flagged = profiles.filter((p) => p.options.confirmBeforeOpen && (statuses[p.id] ?? 'closed') === 'closed')
+      if (flagged.length === 0) return run()
+      setPendingOpen({ profiles: flagged, run })
     },
-    [notify]
+    [statuses]
+  )
+
+  const openProfile = useCallback(
+    async (profile: Profile) =>
+      confirmOpening([profile], async () => {
+        try {
+          await unwrap(window.pob.openProfile(profile.id))
+        } catch (error) {
+          notify('error', errorMessage(error))
+        }
+      }),
+    [notify, confirmOpening]
   )
 
   const closeProfile = useCallback(
@@ -188,6 +204,13 @@ export function useAppData() {
     backups,
     refreshBackups,
     startupNotes,
+    pendingOpen,
+    confirmOpening,
+    resolvePendingOpen: (go: boolean) => {
+      const pending = pendingOpen
+      setPendingOpen(null)
+      if (go && pending) void pending.run()
+    },
     dismissStartupNotes: () => setStartupNotes([]),
     loading,
     loadError,

@@ -110,8 +110,8 @@ describe('diagnostics report', () => {
     })
     expect(closed.pageTested).toBe(false)
     expect(closed.proxyConnection.verdict).toBe('unknown')
-    expect(closed.timezone.verdict).toBe('unknown')
-    expect(closed.webrtcLocal.verdict).toBe('unknown')
+    expect(closed.timezone.verdict).toBe('not-tested')
+    expect(closed.webrtcLocal.verdict).toBe('not-tested')
     expect(closed.webrtcStun).toBeNull()
     expect(closed.partition.expected).toBe(profile.partition)
 
@@ -125,7 +125,11 @@ describe('diagnostics report', () => {
         languages: ['bn-BD', 'bn', 'en'],
         userAgent: 'UA/1',
         webrtc: { error: null, candidates: [host('abc.local')] },
-        stun: null
+        stun: null,
+        secureContext: true,
+        hardware: null,
+        geolocationPermission: 'denied',
+        geolocationPosition: null
       },
       resolvedProxy: 'PROXY 10.0.0.1:8080',
       pagePartition: profile.partition,

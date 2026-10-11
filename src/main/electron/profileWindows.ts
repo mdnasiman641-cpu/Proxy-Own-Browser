@@ -1,6 +1,7 @@
 import {
   app,
   BrowserWindow,
+  dialog,
   Menu,
   clipboard,
   WebContentsView,
@@ -17,6 +18,8 @@ import type {
   ProfileResourceUsage,
   ProfileRuntimeStatus,
   BrowserTimezoneReport,
+  LaunchReport,
+  LaunchReportItem,
   ResourceUsage,
   TabState
 } from '@shared/types'
@@ -30,6 +33,10 @@ import { deriveStatuses, statusOf } from '../services/runtimeStatus'
 import type { SettingsService } from '../services/settingsService'
 import { TabList, type AddTabOptions } from '../services/tabList'
 import type { LaunchPlan } from '../services/networkService'
+import type { LastTabsStore } from '../services/lastTabs'
+import { startupPages, windowTitle } from '../services/windowPolicy'
+import type { ExtensionLoader } from './extensionLoader'
+import type { ConfigurablePermission } from '@shared/browserConfig'
 import { parseProbeResult, probeScript } from '../services/diagnostics'
 import { applyPageEmulation, isEmpty, type PageEmulation } from './pageEmulation'
 import { appWebPreferences, loadPage, lockDownAppContents } from './pages'
@@ -77,6 +84,8 @@ export interface ProfileWindow {
   notice: string | null
   /** Time zone the window's pages actually reported (checked after each page load). */
   reportedTimezone: BrowserTimezoneReport | null
+  /** What was applied when the window opened (and what could not be). */
+  launchReport: LaunchReport
 }
 
 export interface ProfileWindowDeps {
@@ -96,6 +105,23 @@ export interface ProfileWindowDeps {
   pressure?: (appMemoryMb: number) => ResourceUsage['pressure']
   /** Called when a window's pages reported their time zone (see reportedTimezones). */
   onTimezoneReport?: (profileId: string) => void
+  /** Loads the profile's extensions into its session when the window opens. */
+  extensions?: ExtensionLoader
+  /** Tabs saved at close for "restore previous tabs". */
+  lastTabs?: LastTabsStore
+  /** Called when a launch report changed (window opened or settings re-applied). */
+  onLaunchReport?: (profileId: string) => void
+}
+
+const PERMISSION_LABELS: Record<ConfigurablePermission, string> = {
+  notifications: 'show notifications',
+  camera: 'use your camera',
+  microphone: 'use your microphone',
+  geolocation: 'know your location',
+  'clipboard-read': 'read your clipboard',
+  midi: 'use MIDI devices',
+  'idle-detection': 'know when you are idle',
+  'window-management': 'manage windows on your screens'
 }
 
 /** Canonical IANA name, so aliases (Asia/Calcutta vs Asia/Kolkata) compare equal. */
@@ -116,17 +142,29 @@ export interface PageDiagnostics {
   page: PageProbeResult | null
   pagePartition: string | null
   resolvedProxy: string | null
-  expected: { timezone: string | null; locale: string | null; userAgent: string }
+  expected: { timezone: string | null; locale: string | null; userAgent: string; geolocation: { latitude: number; longitude: number; accuracy: number } | null }
   problem: string | null
 }
 
-function emulationOf(profile: Profile, plan: Pick<LaunchPlan, 'timezone' | 'locale'>): PageEmulation {
+function emulationOf(profile: Profile, plan: Pick<LaunchPlan, 'timezone' | 'locale' | 'acceptLanguage' | 'geolocation'>): PageEmulation {
   return {
     timezone: plan.timezone,
     locale: plan.locale,
     userAgent: userAgentFor(profile),
-    acceptLanguage: acceptLanguageForProfile(profile)
+    acceptLanguage: plan.acceptLanguage ?? acceptLanguageForProfile(profile),
+    geolocation: plan.geolocation
   }
+}
+
+const EMPTY_PLAN: LaunchPlan = {
+  timezone: null,
+  timezoneSource: 'off',
+  locale: null,
+  languageSource: 'default',
+  acceptLanguage: null,
+  geolocation: null,
+  geolocationSource: 'off',
+  warnings: []
 }
 
 function timezoneLabel(plan: LaunchPlan): string | null {
@@ -149,6 +187,45 @@ export class ProfileWindowManager {
       isOpen: (id) => this.isOpen(id),
       focus: (id) => this.focus(id)
     })
+    // "Ask" permissions are answered in the window of the profile that asked.
+    this.deps.sessions.askPermission = (profileId, origin, keys) => this.askPermission(profileId, origin, keys)
+  }
+
+  private async askPermission(profileId: string, origin: string, keys: ConfigurablePermission[]): Promise<boolean> {
+    const entry = this.windows.get(profileId)
+    if (!entry || entry.window.isDestroyed()) return false
+    const what = keys.map((k) => PERMISSION_LABELS[k]).join(' and ')
+    const { response } = await dialog.showMessageBox(entry.window, {
+      type: 'question',
+      buttons: ['Block', 'Allow'],
+      defaultId: 0,
+      cancelId: 0,
+      noLink: true,
+      title: entry.profile.name,
+      message: `${origin || 'This site'} wants to ${what}.`,
+      detail: `Profile: ${entry.profile.name}. Your answer applies to this site until the window is closed. Change the default in the profile's settings.`
+    })
+    return response === 1
+  }
+
+  /** What was applied when the profile's window opened, or null when it is not open. */
+  launchReport(profileId: string): LaunchReport | null {
+    return this.windows.get(profileId)?.launchReport ?? null
+  }
+
+  /**
+   * Closes the profile window and opens it again, so settings that only apply at start
+   * (window size, startup pages, extensions) take effect. Unsaved page state is lost; the
+   * dashboard says so before calling this.
+   */
+  async reopen(profileId: string): Promise<OpenOutcome> {
+    const entry = this.windows.get(profileId)
+    if (entry && !entry.window.isDestroyed()) {
+      const closed = new Promise<void>((resolve) => entry.window.once('closed', () => resolve()))
+      entry.window.close()
+      await closed
+    }
+    return this.open(profileId)
   }
 
   openIds(): string[] {
@@ -301,13 +378,27 @@ export class ProfileWindowManager {
       proxyChanged ||
       before.timezoneMode !== profile.browser.timezoneMode ||
       before.timezoneManual !== profile.browser.timezoneManual ||
-      before.language !== profile.browser.language
+      before.language !== profile.browser.language ||
+      before.languageMode !== profile.browser.languageMode ||
+      before.acceptLanguage !== profile.browser.acceptLanguage ||
+      before.geolocationMode !== profile.browser.geolocationMode ||
+      before.geoLatitude !== profile.browser.geoLatitude ||
+      before.geoLongitude !== profile.browser.geoLongitude
     if (timeChanged && this.deps.planLaunch) {
       try {
         const plan = await this.deps.planLaunch(profile.id)
         entry.timezoneLabel = timezoneLabel(plan)
         entry.notice = plan.warnings[0] ?? null
+        this.deps.sessions.setLanguagePlan(profile.partition, plan.acceptLanguage)
         await this.setEmulation(entry, emulationOf(profile, plan))
+        // Settings applied while open replace the matching lines of the launch report.
+        const fresh = launchItems(profile, plan)
+        const names = new Set(fresh.map((i) => i.setting))
+        entry.launchReport = {
+          ...entry.launchReport,
+          items: [...fresh, ...entry.launchReport.items.filter((i) => !names.has(i.setting))]
+        }
+        this.deps.onLaunchReport?.(profile.id)
       } catch (error) {
         // Keep the previous time zone in the open window and say why it was not changed.
         entry.notice = `Time zone not updated: ${error instanceof Error ? error.message : String(error)}`
@@ -380,7 +471,7 @@ export class ProfileWindowManager {
     const activeId = entry.tabs.active
     const tab = activeId ? entry.tabs.get(activeId) : undefined
     const contents = tab && tab.ready && !tab.crashed ? tab.view.webContents : undefined
-    const expected = { timezone: entry.emulation.timezone, locale: entry.emulation.locale, userAgent: entry.emulation.userAgent }
+    const expected = { timezone: entry.emulation.timezone, locale: entry.emulation.locale, userAgent: entry.emulation.userAgent, geolocation: entry.emulation.geolocation }
     if (!contents || contents.isDestroyed()) {
       return { page: null, pagePartition: null, resolvedProxy: null, expected, problem: 'No ready tab to test. Open a page in the profile and try again.' }
     }
@@ -511,10 +602,17 @@ export class ProfileWindowManager {
     const profile = this.deps.profiles.get(profileId)
     // Decided before anything opens: if a required time zone can't be determined, the window
     // is not opened at all rather than showing pages with this PC's time zone.
-    const plan: LaunchPlan = this.deps.planLaunch
-      ? await this.deps.planLaunch(profileId)
-      : { timezone: null, timezoneSource: 'off', locale: null, warnings: [] }
-    await this.deps.sessions.prepare(profile)
+    const plan: LaunchPlan = this.deps.planLaunch ? await this.deps.planLaunch(profileId) : EMPTY_PLAN
+    this.deps.sessions.setLanguagePlan(profile.partition, plan.acceptLanguage)
+    const ses = await this.deps.sessions.prepare(profile)
+    const report: LaunchReportItem[] = launchItems(profile, plan)
+    if (this.deps.extensions) {
+      try {
+        report.push(...(await this.deps.extensions.loadForProfile(ses, profile.id)))
+      } catch (error) {
+        report.push({ setting: 'Extensions', status: 'failed', detail: error instanceof Error ? error.message : String(error) })
+      }
+    }
 
     const window = new BrowserWindow({
       width: profile.browser.windowWidth,
@@ -522,7 +620,7 @@ export class ProfileWindowManager {
       minWidth: 640,
       minHeight: 400,
       show: false,
-      title: `${profile.name} — Proxy Own Browser`,
+      title: windowTitle('', '', profile.name, profile.options.showNameInTitle),
       backgroundColor: '#ffffff',
       autoHideMenuBar: true,
       webPreferences: appWebPreferences('browser')
@@ -538,7 +636,8 @@ export class ProfileWindowManager {
       emulation: emulationOf(profile, plan),
       timezoneLabel: timezoneLabel(plan),
       notice: plan.warnings[0] ?? null,
-      reportedTimezone: null
+      reportedTimezone: null,
+      launchReport: { profileId, openedAt: new Date().toISOString(), items: report }
     }
     this.windows.set(profileId, entry)
     this.deps.onOpenProfilesChanged(this.openIds())
@@ -550,14 +649,31 @@ export class ProfileWindowManager {
     window.on('unmaximize', layout)
     window.on('enter-full-screen', layout)
     window.on('leave-full-screen', layout)
-    window.once('ready-to-show', () => window.show())
+    window.once('ready-to-show', () => {
+      if (entry.profile.options.windowMode === 'maximized') window.maximize()
+      window.show()
+    })
     window.on('unresponsive', () => this.deps.logger.warn(`Profile window ${profileId} is not responding`))
+
+    // Remember the open tabs for "restore previous tabs" (web addresses only).
+    window.on('close', () => {
+      if (entry.profile.options.startupMode !== 'restore' || !this.deps.lastTabs) return
+      const urls = entry.tabs
+        .values()
+        .map((t) => (t.view.webContents.isDestroyed() ? (t.pendingUrl ?? '') : t.view.webContents.getURL() || (t.pendingUrl ?? '')))
+      try {
+        this.deps.lastTabs.save(profileId, urls)
+      } catch (error) {
+        this.deps.logger.warn(`Could not save the open tabs of profile ${profileId}`, error)
+      }
+    })
 
     window.on('closed', () => {
       this.windows.delete(profileId)
       for (const tab of entry.tabs.values()) {
         if (!tab.view.webContents.isDestroyed()) tab.view.webContents.close()
       }
+      this.deps.sessions.forgetPermissionDecisions(profile.partition)
       void this.deps.sessions.flush(profile.partition)
       this.deps.onOpenProfilesChanged(this.openIds())
       this.notifyStatuses()
@@ -573,8 +689,25 @@ export class ProfileWindowManager {
       this.deps.logger.error('Failed to load the browser toolbar', error)
     }
 
-    const startUrl = options.initialUrl ?? profile.startUrl ?? this.deps.settings.get().homepage
-    this.createTab(entry, startUrl, { activate: true })
+    const pages = startupPages(
+      profile.options,
+      profile.startUrl,
+      this.deps.settings.get().homepage,
+      this.deps.lastTabs?.load(profileId) ?? [],
+      options.initialUrl
+    )
+    pages.urls.forEach((url, index) => {
+      if (entry.tabs.canAdd()) this.createTab(entry, url, { activate: index === 0, position: 'end' })
+    })
+    report.push({
+      setting: 'Startup pages',
+      status: pages.source === 'restore-empty' ? 'warning' : 'applied',
+      detail:
+        pages.source === 'restore-empty'
+          ? 'No saved tabs to restore; the start page was opened.'
+          : `${pages.urls.length} tab(s) opened (${pages.source}).`
+    })
+    this.deps.onLaunchReport?.(profileId)
     this.deps.profiles.markOpened(profileId)
     this.deps.logger.info(`Opened profile window ${profileId}`)
   }
@@ -706,8 +839,7 @@ export class ProfileWindowManager {
     if (entry.window.isDestroyed() || entry.window.webContents.isDestroyed()) return
     const state = this.state(entry)
     entry.window.webContents.send(Events.navigationState, state)
-    const title = state.title && state.title !== state.url ? `${state.title} — ` : ''
-    entry.window.setTitle(`${title}${entry.profile.name}`)
+    entry.window.setTitle(windowTitle(state.title, state.url, entry.profile.name, entry.profile.options.showNameInTitle))
   }
 
   /** Keeps the toolbar alive: re-sends state after loads and reloads it if it crashes. */
@@ -915,4 +1047,54 @@ export class ProfileWindowManager {
 function applyWebRtcPolicy(contents: WebContents, policy: WebRtcPolicy): void {
   if (contents.isDestroyed()) return
   contents.setWebRTCIPHandlingPolicy(policy)
+}
+
+/** Launch-report lines for the settings decided before a window opens. */
+function launchItems(profile: Profile, plan: LaunchPlan): LaunchReportItem[] {
+  const items: LaunchReportItem[] = []
+  items.push({
+    setting: 'Proxy',
+    status: profile.proxy ? 'applied' : 'not-set',
+    detail: profile.proxy ? `${describeProxy(profile.proxy)} for every tab; no direct fallback.` : 'Direct connection (no proxy).'
+  })
+  items.push(
+    plan.timezone
+      ? { setting: 'Time zone', status: 'applied', detail: `${plan.timezone} (${plan.timezoneSource}).` }
+      : { setting: 'Time zone', status: 'not-set', detail: 'Pages use this PC’s time zone.' }
+  )
+  items.push(
+    plan.locale || plan.acceptLanguage
+      ? { setting: 'Language', status: 'applied', detail: `${plan.locale ?? 'app language'} (${plan.languageSource}); Accept-Language ${plan.acceptLanguage ?? 'default'}.` }
+      : { setting: 'Language', status: profile.browser.languageMode === 'auto' ? 'warning' : 'not-set', detail: 'The app’s language is used.' }
+  )
+  items.push(
+    plan.geolocation
+      ? {
+          setting: 'Geolocation',
+          status: 'applied',
+          detail: `${plan.geolocation.latitude.toFixed(4)}, ${plan.geolocation.longitude.toFixed(4)} (±${plan.geolocation.accuracy} m, ${plan.geolocationSource}); sites still need the location permission.`
+        }
+      : {
+          setting: 'Geolocation',
+          status: profile.browser.geolocationMode === 'off' ? 'not-set' : 'warning',
+          detail: 'No location is provided to pages.'
+        }
+  )
+  items.push({ setting: 'User-Agent', status: 'applied', detail: profile.browser.userAgent === 'custom' ? 'Custom User-Agent.' : `${profile.browser.userAgent === 'chrome' ? 'Chrome' : 'Default'} User-Agent of the installed engine.` })
+  items.push({ setting: 'WebRTC', status: 'applied', detail: `IP handling policy: ${profile.browser.webrtcPolicy}.` })
+  items.push({ setting: 'Window', status: 'applied', detail: `${profile.browser.windowWidth} × ${profile.browser.windowHeight}, ${profile.options.windowMode}, zoom ${profile.browser.zoomPercent}%.` })
+  items.push({
+    setting: 'Downloads',
+    status: profile.options.downloadMode === 'folder' ? 'applied' : 'not-set',
+    detail: profile.options.downloadMode === 'folder' ? 'Saved to the profile’s download folder.' : 'Ask where to save.'
+  })
+  const granted = Object.entries(profile.browser.permissions).filter(([, v]) => v !== 'block')
+  items.push({
+    setting: 'Permissions',
+    status: 'applied',
+    detail: granted.length ? granted.map(([k, v]) => `${k}: ${v}`).join(', ') + '; everything else is blocked.' : 'All configurable permissions are blocked.'
+  })
+  items.push({ setting: 'Do Not Track', status: profile.options.doNotTrack ? 'applied' : 'not-set', detail: profile.options.doNotTrack ? 'Sends DNT: 1.' : 'Not sent.' })
+  for (const warning of plan.warnings) items.push({ setting: 'Notice', status: 'warning', detail: warning })
+  return items
 }

@@ -274,26 +274,31 @@ export async function phase4SetupChecks(ctx: SmokeContext, check: Check, f: Fixt
   await dash.executeJavaScript(`document.querySelector('[data-testid="details-button"]').click()`)
   const detailsShown =
     (await pageHas(dash, '[data-testid="profile-details"] [data-testid="network-panel"]')) &&
-    (await pageHas(dash, '[data-testid="browser-settings"]')) &&
+    (await pageHas(dash, '[data-testid="config-card"]')) &&
     (await pageHas(dash, '[data-testid="runtime-panel"]'))
   const banglaHeading = await dash.executeJavaScript(
     `document.querySelector('[data-testid="network-panel"] h2')?.textContent ?? ''`
   )
-  check('profile details page shows network, browser settings and runtime panels', detailsShown, banglaHeading)
+  check('profile details page shows network, configuration and runtime panels', detailsShown, banglaHeading)
   check('new pages are translated (Bangla)', banglaHeading === 'প্রক্সি ও আইপি অবস্থা', banglaHeading)
-  const panelsShown =
-    (await pageHas(dash, '[data-testid="diagnostics-panel"]')) &&
-    (await pageHas(dash, '[data-testid="storage-panel"]')) &&
-    (await pageHas(dash, '[data-testid="backup-facts"]')) &&
-    (await pageHas(dash, '[data-testid="webrtc-setting"]'))
+  const panelsShown = (await pageHas(dash, '[data-testid="storage-panel"]')) && (await pageHas(dash, '[data-testid="backup-facts"]'))
+  // Diagnostics and the WebRTC setting live in the profile editor.
+  await dash.executeJavaScript(`document.querySelector('[data-testid="details-edit"]').click()`)
+  await pageHas(dash, '[data-testid="profile-editor"]')
+  await dash.executeJavaScript(`document.querySelector('[data-editor-tab="privacy"]').click()`)
+  const webrtcShown = await pageHas(dash, '[data-testid="webrtc-setting"]')
+  await dash.executeJavaScript(`document.querySelector('[data-editor-tab="diagnostics"]').click()`)
+  await pageHas(dash, '[data-testid="run-diagnostics"]')
   await dash.executeJavaScript(`document.querySelector('[data-testid="run-diagnostics"]').click()`)
   const diagRendered = await pageHas(dash, '[data-testid="diag-dns"][data-verdict]')
   const diagHeading = await dash.executeJavaScript(`document.querySelector('[data-testid="diagnostics-panel"] h2')?.textContent ?? ''`)
   check(
-    'details page shows diagnostics (with results), own-vs-shared storage, backup status and the WebRTC setting',
-    panelsShown && diagRendered && diagHeading === 'ডায়াগনস্টিকস',
+    'diagnostics (with results), own-vs-shared storage, backup status and the WebRTC setting are shown',
+    panelsShown && webrtcShown && diagRendered && diagHeading === 'ডায়াগনস্টিকস',
     diagHeading
   )
+  await dash.executeJavaScript(`document.querySelector('.editor-header .icon-button')?.click()`)
+  await waitFor(async () => !(await dash.executeJavaScript(`Boolean(document.querySelector('[data-testid="profile-editor"]'))`)))
   await dash.executeJavaScript(`document.querySelector('[data-nav="backup"]').click()`)
   const backupShown = (await pageHas(dash, '[data-testid="backup-folder"]')) && (await pageHas(dash, '[data-testid="backup-files"] table'))
   const folderText = await dash.executeJavaScript(`document.querySelector('[data-testid="backup-folder"] .mono')?.textContent ?? ''`)

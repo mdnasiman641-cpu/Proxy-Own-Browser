@@ -3,6 +3,7 @@ import { join } from 'node:path'
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 import { AppDatabase, MIGRATIONS, SCHEMA_VERSION } from '../src/main/services/database'
 import { loadSqlJs } from '../src/main/services/sqlite'
+import { DEFAULT_PROFILE_OPTIONS } from '../src/shared/profileOptions'
 import { createService, tempDir } from './helpers'
 
 /** Writes a database file exactly as Phase 1/2 (schema v1) left it, with real rows. */
@@ -39,8 +40,8 @@ describe('database migrations', () => {
     await writeV1Database(file)
 
     const { db, migratedFrom, preMigrationBackup } = AppDatabase.open(await loadSqlJs(), file)
-    expect(SCHEMA_VERSION).toBe(5)
-    expect(db.schemaVersion).toBe(5)
+    expect(SCHEMA_VERSION).toBe(6)
+    expect(db.schemaVersion).toBe(6)
     expect(migratedFrom).toBe(1)
     db.close()
 
@@ -57,13 +58,17 @@ describe('database migrations', () => {
     expect(shop.browser).toMatchObject({ timezoneMode: 'auto', language: null, zoomPercent: 100, userAgent: 'default' })
     expect(profiles.find((p) => p.name === 'Backup')!.browser.timezoneMode).toBe('off')
     expect(profiles.find((p) => p.name === 'Backup')!.lastOpenedAt).toBe('2026-01-04T00:00:00.000Z')
+    // v6: existing profiles get the default advanced options and the new browser settings' defaults.
+    expect(shop.options).toEqual(DEFAULT_PROFILE_OPTIONS)
+    expect(shop.browser).toMatchObject({ languageMode: 'default', acceptLanguage: null, geolocationMode: 'off', webrtcPolicy: 'default' })
+    expect(shop.browser.permissions).toMatchObject({ camera: 'block', microphone: 'block', midi: 'block' })
 
     // New features work on the upgraded data.
     const group = catalog.createGroup({ name: 'Shops' })
     expect(service.update(shop.id, { groupId: group.id, tags: ['fb'] })).toMatchObject({ groupId: group.id, tags: ['fb'] })
 
     // A copy of the pre-upgrade file is kept and is still a valid v1 database.
-    expect(preMigrationBackup).toMatch(/profiles\.sqlite\.pre-v5-\d+\.bak$/)
+    expect(preMigrationBackup).toMatch(/profiles\.sqlite\.pre-v6-\d+\.bak$/)
     const SQL = await loadSqlJs()
     const old = new SQL.Database(readFileSync(preMigrationBackup!))
     expect((old.exec('PRAGMA user_version')[0] as { values: unknown[][] }).values[0]![0]).toBe(1)

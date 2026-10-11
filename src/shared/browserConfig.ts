@@ -6,10 +6,45 @@ import { z } from 'zod'
  * nothing is designed to hide the browser from website security checks.
  */
 
-/** Site permissions a profile can allow. Everything else stays blocked. */
-export const CONFIGURABLE_PERMISSIONS = ['notifications', 'media', 'geolocation', 'clipboard-read'] as const
+/**
+ * Site permissions a profile can set. Each maps to a permission Electron reports to the
+ * session's permission handlers (camera and microphone are the two halves of `media`).
+ * Everything else stays blocked.
+ */
+export const CONFIGURABLE_PERMISSIONS = [
+  'notifications',
+  'camera',
+  'microphone',
+  'geolocation',
+  'clipboard-read',
+  'midi',
+  'idle-detection',
+  'window-management'
+] as const
 export type ConfigurablePermission = (typeof CONFIGURABLE_PERMISSIONS)[number]
-export type PermissionSetting = 'block' | 'allow'
+/** `ask`: the profile window asks once per site while it is open. */
+export const PERMISSION_SETTINGS = ['block', 'ask', 'allow'] as const
+export type PermissionSetting = (typeof PERMISSION_SETTINGS)[number]
+
+/**
+ * - `default`: the app's language (this PC's language).
+ * - `manual`: the language tag chosen for the profile.
+ * - `auto`: derived from the country of the proxy's verified public IP (see countryLanguage.ts);
+ *   when the country is unknown or has no mapping, the app's language is used and the launch
+ *   report says so.
+ */
+export const LANGUAGE_MODES = ['default', 'manual', 'auto'] as const
+export type LanguageMode = (typeof LANGUAGE_MODES)[number]
+
+/**
+ * Geolocation the profile's pages receive (through `Emulation.setGeolocationOverride`), only
+ * when the site is also allowed to use the location:
+ * - `off`: no override — this Electron build has no location provider, so pages get no location.
+ * - `auto`: the approximate coordinates of the proxy's verified public IP.
+ * - `manual`: coordinates the user entered.
+ */
+export const GEOLOCATION_MODES = ['off', 'auto', 'manual'] as const
+export type GeolocationMode = (typeof GEOLOCATION_MODES)[number]
 
 /** Permissions every profile gets without asking (harmless and needed by normal sites). */
 export const ALWAYS_ALLOWED_PERMISSIONS = ['fullscreen', 'clipboard-sanitized-write', 'pointerLock'] as const
@@ -25,9 +60,12 @@ export type TimezoneMode = (typeof TIMEZONE_MODES)[number]
 /**
  * - `default`: Electron's own User-Agent (contains "Electron/<version>" and the app name).
  * - `chrome`: the same real Chromium version, without the Electron and app tokens — what a
- *   regular Chrome of this exact version sends. No other versions are ever offered.
+ *   regular Chrome of this exact version sends.
+ * - `custom`: a User-Agent string the user typed. It only changes the header and
+ *   navigator.userAgent, never the engine; a version that differs from the installed one is
+ *   flagged as a conflict everywhere it is shown. The app never suggests other versions.
  */
-export const USER_AGENT_MODES = ['default', 'chrome'] as const
+export const USER_AGENT_MODES = ['default', 'chrome', 'custom'] as const
 export type UserAgentMode = (typeof USER_AGENT_MODES)[number]
 
 /**
@@ -43,8 +81,14 @@ export const WEBRTC_POLICIES = ['default', 'default_public_interface_only', 'dis
 export type WebRtcPolicy = (typeof WEBRTC_POLICIES)[number]
 
 export interface BrowserConfig {
-  /** BCP 47 language tag such as `en-US` or `bn-BD`; null keeps the app default. */
+  /** BCP 47 language tag such as `en-US` or `bn-BD`, used in `manual` language mode. */
   language: string | null
+  languageMode: LanguageMode
+  /**
+   * Optional Accept-Language list (comma-separated language tags, most preferred first).
+   * Null derives it from the language, e.g. `bn-BD,bn,en`.
+   */
+  acceptLanguage: string | null
   timezoneMode: TimezoneMode
   /** IANA time zone used in `manual` mode. */
   timezoneManual: string | null
@@ -52,7 +96,13 @@ export interface BrowserConfig {
   windowHeight: number
   zoomPercent: number
   userAgent: UserAgentMode
+  /** Used in `custom` User-Agent mode. */
+  customUserAgent: string | null
   webrtcPolicy: WebRtcPolicy
+  geolocationMode: GeolocationMode
+  /** Manual coordinates (decimal degrees). */
+  geoLatitude: number | null
+  geoLongitude: number | null
   permissions: Record<ConfigurablePermission, PermissionSetting>
 }
 
@@ -72,9 +122,24 @@ export const DEFAULT_BROWSER_CONFIG: BrowserConfig = {
   windowWidth: 1280,
   windowHeight: 860,
   zoomPercent: 100,
+  languageMode: 'default',
+  acceptLanguage: null,
   userAgent: 'default',
+  customUserAgent: null,
   webrtcPolicy: 'default',
-  permissions: { notifications: 'block', media: 'block', geolocation: 'block', 'clipboard-read': 'block' }
+  geolocationMode: 'off',
+  geoLatitude: null,
+  geoLongitude: null,
+  permissions: {
+    notifications: 'block',
+    camera: 'block',
+    microphone: 'block',
+    geolocation: 'block',
+    'clipboard-read': 'block',
+    midi: 'block',
+    'idle-detection': 'block',
+    'window-management': 'block'
+  }
 }
 
 /** Common browser languages offered in the UI (any valid BCP 47 tag is accepted). */
@@ -117,13 +182,47 @@ export const timeZoneSchema = z
   .trim()
   .refine(isValidTimeZone, 'Unknown time zone. Choose one from the list (for example Asia/Dhaka).')
 
+/** Canonical form of a language tag; an invalid tag is returned unchanged (validation reports it). */
+function canonicalTag(tag: string): string {
+  try {
+    return Intl.getCanonicalLocales(tag)[0] ?? tag
+  } catch {
+    return tag
+  }
+}
+
 export const languageTagSchema = z
   .string()
   .trim()
-  .refine(isValidLanguageTag, 'Unknown language code. Use a code such as en-US or bn-BD.')
-  .transform((tag) => Intl.getCanonicalLocales(tag)[0]!)
+  .refine(isValidLanguageTag, { message: 'Unknown language code. Use a code such as en-US or bn-BD.', abort: true })
+  .transform((tag) => canonicalTag(tag))
 
-const permissionSchema = z.enum(['block', 'allow'])
+const permissionSchema = z.enum(PERMISSION_SETTINGS)
+
+/** Comma-separated list of valid language tags (at most 10), normalized. */
+export const acceptLanguageSchema = z
+  .string()
+  .trim()
+  .max(200, 'Accept-Language can be at most 200 characters')
+  .refine(
+    (v) => {
+      const parts = v.split(',').map((x) => x.trim())
+      return parts.length >= 1 && parts.length <= 10 && parts.every((x) => isValidLanguageTag(x))
+    },
+    { message: 'Use language tags separated by commas, for example bn-BD,bn,en', abort: true }
+  )
+  .transform((v) => [...new Set(v.split(',').map((x) => canonicalTag(x.trim())))].join(','))
+
+/** Printable ASCII only (what an HTTP header can carry), 20–400 characters. */
+export const customUserAgentSchema = z
+  .string()
+  .trim()
+  .min(20, 'The User-Agent is too short')
+  .max(400, 'The User-Agent can be at most 400 characters')
+  .regex(/^[\x20-\x7e]+$/, 'The User-Agent can only contain printable ASCII characters')
+
+const latitudeSchema = z.number().finite().min(-90, 'Latitude must be between -90 and 90').max(90, 'Latitude must be between -90 and 90')
+const longitudeSchema = z.number().finite().min(-180, 'Longitude must be between -180 and 180').max(180, 'Longitude must be between -180 and 180')
 
 export const browserConfigUpdateSchema = z
   .object({
@@ -148,14 +247,26 @@ export const browserConfigUpdateSchema = z
       .min(BROWSER_LIMITS.zoomMin, `Zoom must be at least ${BROWSER_LIMITS.zoomMin}%`)
       .max(BROWSER_LIMITS.zoomMax, `Zoom can be at most ${BROWSER_LIMITS.zoomMax}%`)
       .optional(),
+    languageMode: z.enum(LANGUAGE_MODES).optional(),
+    acceptLanguage: acceptLanguageSchema.nullable().optional(),
     userAgent: z.enum(USER_AGENT_MODES).optional(),
+    customUserAgent: customUserAgentSchema.nullable().optional(),
     webrtcPolicy: z.enum(WEBRTC_POLICIES).optional(),
+    geolocationMode: z.enum(GEOLOCATION_MODES).optional(),
+    geoLatitude: latitudeSchema.nullable().optional(),
+    geoLongitude: longitudeSchema.nullable().optional(),
     permissions: z
       .object({
         notifications: permissionSchema.optional(),
+        camera: permissionSchema.optional(),
+        microphone: permissionSchema.optional(),
+        /** Earlier versions: camera and microphone together. */
         media: permissionSchema.optional(),
         geolocation: permissionSchema.optional(),
-        'clipboard-read': permissionSchema.optional()
+        'clipboard-read': permissionSchema.optional(),
+        midi: permissionSchema.optional(),
+        'idle-detection': permissionSchema.optional(),
+        'window-management': permissionSchema.optional()
       })
       .strict()
       .optional()
@@ -174,8 +285,18 @@ export function mergeBrowserConfig(
     ...Object.fromEntries(Object.entries(update).filter(([k, v]) => v !== undefined && k !== 'permissions')),
     permissions: { ...base.permissions }
   } as BrowserConfig
+  // Callers that only set a language (earlier versions, templates) mean manual mode.
+  if (update.languageMode === undefined && update.language !== undefined) {
+    next.languageMode = update.language ? 'manual' : next.languageMode === 'manual' ? 'default' : next.languageMode
+  }
   for (const [key, value] of Object.entries(update.permissions ?? {})) {
-    if (value) next.permissions[key as ConfigurablePermission] = value
+    if (!value) continue
+    if (key === 'media') {
+      next.permissions.camera = value
+      next.permissions.microphone = value
+    } else {
+      next.permissions[key as ConfigurablePermission] = value
+    }
   }
   return next
 }
@@ -206,13 +327,29 @@ export function parseStoredBrowserConfig(raw: unknown): BrowserConfig {
     }
   }
   const perms = input.permissions
+  const isSetting = (v: unknown): v is PermissionSetting => (PERMISSION_SETTINGS as readonly unknown[]).includes(v)
   if (perms && typeof perms === 'object') {
+    // Earlier versions stored camera and microphone together as `media`.
+    const legacyMedia = (perms as Record<string, unknown>).media
+    if (isSetting(legacyMedia)) {
+      config.permissions.camera = legacyMedia
+      config.permissions.microphone = legacyMedia
+    }
     for (const key of CONFIGURABLE_PERMISSIONS) {
       const v = (perms as Record<string, unknown>)[key]
-      if (v === 'allow' || v === 'block') config.permissions[key] = v
+      if (isSetting(v)) config.permissions[key] = v
     }
   }
+  // Saved before language modes existed: a set language means manual mode.
+  if (!('languageMode' in input) || !LANGUAGE_MODES.includes(input.languageMode as LanguageMode)) {
+    config.languageMode = config.language ? 'manual' : 'default'
+  }
   if (config.timezoneMode === 'manual' && !config.timezoneManual) config.timezoneMode = 'off'
+  if (config.languageMode === 'manual' && !config.language) config.languageMode = 'default'
+  if (config.userAgent === 'custom' && !config.customUserAgent) config.userAgent = 'default'
+  if (config.geolocationMode === 'manual' && (config.geoLatitude === null || config.geoLongitude === null)) {
+    config.geolocationMode = 'off'
+  }
   return config
 }
 
@@ -220,6 +357,11 @@ export function parseStoredBrowserConfig(raw: unknown): BrowserConfig {
 export function browserConfigProblem(config: BrowserConfig): string | null {
   if (config.timezoneMode === 'manual' && !config.timezoneManual) {
     return 'Choose a time zone for Manual mode.'
+  }
+  if (config.languageMode === 'manual' && !config.language) return 'Choose a language for Manual language mode.'
+  if (config.userAgent === 'custom' && !config.customUserAgent) return 'Enter the custom User-Agent.'
+  if (config.geolocationMode === 'manual' && (config.geoLatitude === null || config.geoLongitude === null)) {
+    return 'Enter latitude and longitude for manual geolocation.'
   }
   return null
 }
@@ -247,4 +389,32 @@ export function acceptLanguageFor(tag: string): string {
   if (base !== tag) parts.push(base)
   if (base !== 'en') parts.push('en')
   return parts.join(',')
+}
+
+/** Major Chromium version in a User-Agent (`Chrome/152.0…` → 152), or null. */
+export function chromeMajor(userAgent: string): number | null {
+  const m = /\bChrome\/(\d+)\./.exec(userAgent)
+  return m ? Number(m[1]) : null
+}
+
+/**
+ * Why a custom User-Agent does not describe the installed runtime, or null when it does. The
+ * User-Agent never changes the engine, so a mismatch makes sites see a version that is not real.
+ */
+export function userAgentConflict(custom: string, runtimeUserAgent: string): string | null {
+  const real = chromeMajor(runtimeUserAgent)
+  const claimed = chromeMajor(custom)
+  if (claimed === null) return 'It does not name a Chrome version, but the engine is Chromium ' + (real ?? '?') + '.'
+  if (real !== null && claimed !== real) {
+    return `It claims Chrome ${claimed}, but the engine is Chromium ${real}. Changing the User-Agent does not change the engine.`
+  }
+  const realWindows = /Windows NT/.test(runtimeUserAgent)
+  if (realWindows !== /Windows NT/.test(custom)) return 'It names a different operating system than the one this browser runs on.'
+  return null
+}
+
+/** The User-Agent a profile's pages use, given the runtime's own default and plain-Chrome ones. */
+export function effectiveUserAgent(browser: Pick<BrowserConfig, 'userAgent' | 'customUserAgent'>, runtime: { defaultUserAgent: string; chromeUserAgent: string }): string {
+  if (browser.userAgent === 'custom' && browser.customUserAgent) return browser.customUserAgent
+  return browser.userAgent === 'chrome' ? runtime.chromeUserAgent : runtime.defaultUserAgent
 }

@@ -109,7 +109,7 @@ export class MetadataBackupService {
                 }
               : undefined
           },
-          { preferredId: entry.id, baseBrowserConfig: entry.browser, allowSharedProxy: true }
+          { preferredId: entry.id, baseBrowserConfig: entry.browser, baseOptions: entry.options, allowSharedProxy: true }
         )
         if (entry.id) profileIds.set(entry.id, profile.id)
         if (name !== entry.name) renamed.push(`${entry.name} → ${name}`)
