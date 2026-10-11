@@ -222,6 +222,11 @@ export function BackupPage({ data }: { data: AppData }) {
                     <td>{t(f.kind === 'full' ? 'backup.kind.full' : 'backup.kind.metadata')}</td>
                     <td className="small">
                       {f.profiles.length === 1 ? f.profiles[0]!.name : t('backup.nProfiles', { count: f.profiles.length })}
+                      {f.profiles.length === 1 && f.profiles[0]!.id && (
+                        <div className="muted mono" title={f.profiles[0]!.id}>
+                          {f.profiles[0]!.id.slice(0, 8)}
+                        </div>
+                      )}
                     </td>
                     <td className="small nowrap">
                       {formatDate(f.createdAt)}

@@ -10,8 +10,61 @@ Built with Electron, React + TypeScript + Vite, SQLite (sql.js), and packaged wi
 ### Profiles and sessions
 - **Dashboard** — profile, running, group and proxy counts, recently used profiles.
 - **Isolated sessions** — each profile uses a unique persistent Electron partition
-  (`persist:profile-<uuid>`). Logins and cookies survive app restarts and are never shared between
-  profiles. A deleted profile's partition is never reused.
+  (`persist:profile-<uuid>`). Cookies, logins, localStorage, IndexedDB, cache, service workers,
+  site permissions, proxy, language and time zone are separate per profile and survive restarts.
+  A deleted profile's partition is never reused. The smoke test checks this with two profiles
+  running at the same time on the same website.
+- **Profile details page** (click a profile's name or the ⓘ button): proxy and IP status, time
+  zone, language and browser settings, the real browser engine versions, this PC's hardware (shown
+  separately and never changed), and the profile's backups.
+- **Duplicate** a profile with an explicit choice: *settings only* (new empty storage) or *settings
+  and browser data* (cookies, logins and site storage copied into the copy's own new storage). A
+  duplicate never shares the original's storage.
+
+> Separate sessions keep profiles from mixing data. They do **not** make a profile anonymous or
+> undetectable — websites can still recognise browsers in other ways. This app does not try to
+> hide that it is a browser or bypass website security checks.
+
+### Proxy status, public IP and location (Phase 4)
+- Every profile shows its assigned proxy and, after a check, **two separate results**:
+  1. **Proxy connection** — working / failed (with the reason: invalid settings, rejected
+     password, timeout, cannot connect, …) and the **public IP seen through the proxy**.
+  2. **IP location lookup** — country, region, city, approximate coordinates and the IANA time zone
+     of that IP, from `ipwho.is` (fallback `ipapi.co`), plus when it was checked. A working proxy
+     does not imply a successful lookup; a failed lookup shows **Unknown/Failed**, never a guess.
+- The lookup is made **through the profile's proxy** in a temporary cookie-less session, so it can
+  never report this PC's own IP by mistake. The services only see the proxy's IP. No API keys are
+  used. Turn lookups off in Application Settings.
+- Results are stored per profile with the proxy they were made for; after a proxy change the old
+  result is marked *out of date*. **Check now** re-checks on demand (no background polling).
+- If two profiles' latest checks saw the **same public exit IP**, both are flagged. Providers can
+  share or rotate exit IPs, so different proxy addresses do not guarantee different IPs.
+- **Require unique proxy assignment** (Application Settings): saving a profile whose proxy (same
+  host, port and username) is already assigned to another profile is refused unless you confirm it
+  explicitly. Also applies to duplicates and the bulk wizard.
+- When a profile has a proxy, **its pages never fall back to a direct connection**: if the proxy
+  fails, the page shows the proxy error (checked by the smoke test).
+
+### Time zone, language and browser settings (Phase 4)
+Per profile, in its details page:
+- **Time zone**: *This PC* (no change — the default, also for upgraded profiles), *Automatic* (the
+  IANA time zone of the proxy's public IP, refreshed when the proxy changes or on request, cached for
+  12 hours) or *Manual* (any IANA zone, e.g. `Asia/Dhaka`). In Automatic mode a profile whose time
+  zone can't be detected **does not open** and says why; if a valid zone was detected before for the
+  same proxy it is used with a warning. It never silently uses this PC's zone. IP geolocation is
+  approximate and can be wrong — use Manual mode when you know better.
+- **Language** (e.g. `bn-BD`): Accept-Language header, `navigator.language(s)` and date/number
+  formats (`Intl`).
+- **Window size**, **zoom**, **User-Agent** (*Default* or *Chrome* — both the real installed
+  Chromium version; no other versions are offered or invented), and **site permissions**
+  (notifications, camera/microphone, location, clipboard read; everything else stays blocked).
+- Time zone and language are applied with Chromium's documented DevTools-protocol emulation
+  (`Emulation.setTimezoneOverride`, `setLocaleOverride`, `setUserAgentOverride` for the language
+  list) through Electron's `webContents.debugger`, **before the first page loads**. This changes what
+  web pages see; it does **not** change the Windows clock or other programs. The smoke test checks
+  the values pages actually report.
+- Nothing about the PC's hardware (CPU, RAM, GPU, canvas/WebGL) is faked. The details page shows the
+  real Electron/Chromium versions and this PC's hardware for information only.
 
 ### Profile Manager (Phase 3)
 - **Table and card views** of all profiles with a live status for each one (Closed, Starting,
@@ -55,13 +108,40 @@ Create **1–100 profiles at once**:
 English (default) and **Bangla (বাংলা)** — switch in Application Settings. Every dashboard string has
 a Bangla translation (checked by a unit test).
 
-### Backup & Restore
-- **Metadata backup (v2)**: profiles (names, notes, colors, start pages, groups, tags, proxy
-  addresses without passwords), groups, tags, templates and settings, saved as JSON with a
-  SHA-256 integrity digest. Restoring checks the format, size (5 MB) and digest and refuses a damaged
-  or modified file instead of partially restoring it. Groups are merged by name, name clashes are
-  renamed "(2)", and older v1 backups are still accepted. You can also export only selected profiles.
-- **Browser-data backup (cookies, logins, storage) is not implemented.** See Known limitations.
+### Local backup & restore (Phase 4)
+Backups stay **on this PC**, in a folder you choose with the folder dialog (Backup & Restore →
+Backup folder). Nothing is uploaded. Actions: back up *this profile* (details page), *selected
+profiles* (Profiles → select → Back up), *all profiles*; browse the backups in the folder (or choose
+any file), **verify**, **restore into the original profile** or **restore as a new profile**, export
+and import (merge) metadata. Every backup and restore is recorded in the backup history.
+
+| | Metadata backup (`POB_metadata_….json`) | Full browser-data backup (`POB_full_<name>_<id>_<date>.pobfull`) |
+| --- | --- | --- |
+| Contents | Profile names and IDs, groups, tags, notes, start pages, browser/time zone settings, proxy addresses (no passwords), templates, app settings, creation dates, schema and app version | Everything in the metadata of that profile **plus** cookies, logins, localStorage, IndexedDB, service workers and other Chromium profile data |
+| Not included | Passwords, cookies, browser data | Proxy passwords; caches Chromium rebuilds (HTTP, code, GPU caches), temporary blob storage and offline site caches (each listed in the result) |
+| Protection | SHA-256 integrity digest (detects damage/edits) | **AES-256-GCM, key from your password with scrypt** (random salt; nothing hard-coded); SHA-256 per file; the whole file is authenticated; a `.sha256` file is written next to it |
+
+How full backups stay safe:
+- Chromium keeps a profile's database files open once its session has been used in the current
+  run. Such a profile is **never copied while in use**: the backup is scheduled and made
+  automatically at the **next app start, before any profile opens** (the password-derived key is
+  kept until then protected by Windows DPAPI and erased after the task). "Restart now" does it
+  immediately. Profiles not used since the app started are backed up right away.
+- The file is written as `….partial` and only renamed when every file was read completely and
+  unchanged; then it is **read back and verified** before success is reported.
+- **Restore** first decrypts and verifies everything (tag, every file's checksum, the manifest lists
+  exactly the files present, no path can leave the target folder) into a staging folder. Only then:
+  - *as a new profile*: a new profile with a **new ID and new session** is created and the data
+    moved into its own folder;
+  - *into the original*: only the profile the backup belongs to (same ID) can be overwritten, it must
+    be closed, its current data is **kept** in `Partitions\.pob-work\previous\…`, and the swap is
+    journaled so an interruption is completed or rolled back at the next start. If the profile was
+    used in this run, the verified data is staged and swapped in at the next start.
+  - Damaged, modified, truncated, wrong-password and newer-version backups are rejected **without
+    changing anything**.
+- Logins can still expire after a restore, and restored cookies may not work on another PC or
+  Windows account.
+- Metadata backups v1 (Phase 1/2), v2 (Phase 3) and v3 (Phase 4) can all be restored.
 
 ### Tabs (Phase 2)
 Each profile window has tabs. **All tabs in a window belong to that profile's session** — they
@@ -130,7 +210,15 @@ How the test protects you:
 - Every IPC call checks the sender (only the dashboard page or a profile toolbar page) and validates
   arguments with zod in the main process.
 - Strict Content-Security-Policy for app pages; only `http(s)` URLs can be loaded in profiles.
-- Website permissions (camera, microphone, location, notifications…) are denied by default.
+- Website permissions (camera, microphone, location, notifications…) are denied by default and can
+  be allowed per profile.
+- Backup files can only be read from paths the app listed itself or that you picked in a file
+  dialog; archive paths are validated (no `..`, absolute paths, drive letters, links or reserved
+  names), and manifests are size-limited and schema-checked.
+- The only external requests the app makes on its own are the IP check and IP location lookup when
+  you check a profile (described above).
+- The DevTools-protocol connection used for time zone/language is internal to the app; it is not a
+  remote debugging port and is not reachable from outside.
 - Proxy passwords are encrypted with Windows DPAPI via Electron `safeStorage`, are never sent back to
   the UI, never written to logs (log lines are additionally passed through a redaction filter), and
   are not included in backups.
@@ -197,6 +285,17 @@ launches the real app twice with a temporary data folder. It checks, among other
 - proxy tests: success with the proxied IP, wrong/missing password, unreachable proxy, 3-second
   timeout, no credentials sent to the website, password-reuse rules for unsaved drafts
 - that the proxy username and password never appear in the log file
+- Phase 4: localStorage and IndexedDB isolated between two profiles running at the same time on
+  the same site; a failing proxy never falling back to a direct connection; the IP check and
+  location lookup going through the profile's proxy; a failed lookup shown as failed; Automatic time
+  zone refusing to open when detection fails; same-exit-IP warning; pages reporting the automatic
+  (America/New_York) and manual (Asia/Tokyo) time zones, the profile language (Intl,
+  Accept-Language, navigator.language(s)) and per-profile permissions while another profile keeps
+  its own; real runtime versions and the *Chrome* User-Agent; zoom and window size; unique proxy
+  assignment; local metadata backup; full backup and data copy scheduled while in use and done at
+  the next start; full backup of a closed profile, wrong password and damaged backup rejected,
+  restore as a new profile with the original cookies; settings, network status and time zone
+  persisted after restart; the new pages in Bangla
 - Profile Manager (through the real dashboard IPC): bulk wizard preview and creation of 25
   profiles with unique partitions and no windows opened, retry without duplicates, groups, bulk
   move and tag changes, templates, bulk open stopping at the window limit, status changes on a tab
@@ -220,8 +319,10 @@ smoke test, and the Windows EXE builds (`npm run dist:win` and `npm run dist:por
 | Path | Contents |
 | --- | --- |
 | `data\profiles.sqlite` | Profiles, groups, tags, templates, proxy settings (passwords encrypted), app settings |
-| `data\profiles.sqlite.pre-v2-<time>.bak` | Copy of the database made automatically before an upgrade migration |
+| `data\profiles.sqlite.pre-v<N>-<time>.bak` | Verified copy of the database made automatically before an upgrade migration |
 | `Partitions\profile-<uuid>\` | Each profile's cookies, storage and cache |
+| `Partitions\.pob-work\` | Restore staging, journals, and each profile's data as it was before an in-place restore (`previous\` — delete it yourself when no longer needed) |
+| your backup folder | Backups you made (only where you chose) |
 | `logs\app.log` | Application log (no credentials) |
 
 Set the `POB_USER_DATA_DIR` environment variable to use a different data folder.
@@ -237,18 +338,28 @@ If a migration fails, the file is left untouched and the app shows the error ins
 with an empty list. A database created by a newer version of the app is refused rather than
 modified.
 
+Version 0.4.0 upgrades schema 2 to 3, again only **adding**: a `browser_config` column on profiles
+(existing profiles get the defaults, which keep the previous behaviour — no time zone or language
+override, same window size, 100 % zoom, default User-Agent, permissions blocked), and the tables
+`profile_network_status`, `backup_history` and `jobs`. Before upgrading, the database is copied
+to `profiles.sqlite.pre-v3-<time>.bak` and the copy is **verified** (same SHA-256 and readable with
+the old schema); if that fails, the upgrade does not start and the data is untouched.
+
 ## Project structure
 
 ```
 src/
   main/
     index.ts                 App bootstrap, proxy-auth handler, shutdown
-    smokeTest.ts             End-to-end self test (only runs when POB_SMOKE_TEST is set)
+    smokeTest.ts, smokePhase4.ts, smokeHelpers.ts
+                             End-to-end self test (only runs when POB_SMOKE_TEST is set)
     electron/                Electron-specific code: windows & tabs, sessions, proxy tester, IPC, cipher
     services/                Pure logic (unit-tested): SQLite, profiles, settings, backup, logger,
                              proxy test runner, tab list, window open coordinator, groups/tags
                              (catalogService), templates, bulk creation and bulk runner,
-                             metadata backup, managed partition paths, status and memory attribution
+                             metadata backup, managed partition paths, status and memory attribution,
+                             network status + IP geolocation, encrypted full backup archive,
+                             backup center (backup/restore/duplicate/start-up jobs), resource pressure
   preload/                   One sandboxed preload; each app page gets only its own API
   renderer/
     dashboard/               React dashboard (7 sections), bulk wizard, English/Bangla strings
@@ -277,7 +388,45 @@ scripts/smoke-fixtures.mjs   Local proxy/endpoint servers used only by the smoke
 | Restore says the backup is **damaged or was modified** | The file was edited or truncated; the integrity digest no longer matches. Use an unmodified backup. |
 | App says the database is from a **newer version** | You opened data from a newer app version. Update the app; the data was not changed. |
 | Delete reports "browser data partially removed" | Chromium still had a file open. The data is cleared; an empty folder may remain until restart. |
+| Profile won't open: "time zone could not be detected" | Automatic time zone needs a working proxy and IP lookup. Press *Check now* on the details page to see which part failed, fix the proxy, or switch the profile to Manual time zone. |
+| IP location shows **Unknown** | The lookup failed or is turned off; the proxy itself may still work (see *Proxy connection*). |
+| "already assigned to …" when saving | *Require unique proxy assignment* is on. Choose another proxy or confirm the shared use. |
+| Full backup says "scheduled" | The profile was used since the app started. Restart the app (Backup & Restore → *Restart now*); it is made before any profile opens. |
+| Restore: "The password is not correct" | Full backups can only be opened with the password chosen when they were made. |
+| Logged out after restoring | Websites can end sessions; restored cookies may also not work on another PC or Windows account. |
 | Need logs for a bug report | Application Settings → Open data folder → `logs\app.log` (contains no credentials). |
+
+## Checking it yourself
+
+### Several profiles with different proxies
+1. Create profile **A** with proxy 1 and profile **B** with proxy 2 (Profiles → New profile → Proxy).
+   With *Require unique proxy assignment* on, giving B the same proxy as A asks for confirmation.
+2. Open each profile's details page (click its name) and press **Check now**. Each shows its own
+   *Proxy connection* (public IP) and *IP location lookup* (country/city/time zone). If both show
+   the same public IP, a warning appears.
+3. Set A's time zone to **Automatic** and B's to **Manual → Europe/London**; set A's language to
+   `bn-BD`.
+4. Open A and B at the same time. In each, visit a page that shows your IP and browser time zone
+   (for example a "what is my IP" site). A shows proxy 1's IP and its detected zone; B shows proxy
+   2's IP and London time. Log in to a site in A — B stays logged out.
+5. Change A's proxy and check again: the old result is marked out of date; B is unchanged.
+6. Restart the app: proxies, time zones, languages and logins of both profiles are kept.
+7. Put a wrong port on a test profile and open it: pages show the proxy error, not your own IP.
+
+### Local backup and restore
+1. Backup & Restore → **Choose folder…** and pick a folder on your PC (e.g. on another drive).
+2. Close profile A (or restart the app without opening it), then on A's details page choose **Full
+   backup (encrypted)…**, enter a password twice and start. The result lists the file name, size and
+   what was not included; the file appears under *Backups in the folder*. If A was used since the
+   app started, the backup is *scheduled* — press **Restart now**.
+3. Press **Verify** on the file and enter the password: all checksums are checked.
+4. **Restore… → A new profile**: a new profile appears with a new ID, logged in like A was.
+5. **Restore… → The original profile** (A closed): A's current data is kept under
+   `Partitions\.pob-work\previous\`, the backup's data is put in place and verified.
+6. Try a wrong password, or a copy of the file with a byte changed: both are rejected and nothing
+   changes.
+7. **Back up all (metadata)** writes `POB_metadata_all-profiles_<date>.json` (no passwords, no
+   browser data); *Import metadata* merges such a file into another install.
 
 ## Known limitations
 
@@ -294,11 +443,20 @@ scripts/smoke-fixtures.mjs   Local proxy/endpoint servers used only by the smoke
 - **Session-only cookies** (cookies without an expiry date) are, as in every browser, discarded when
   the app closes. Normal "remember me" logins persist.
 - **Website HTTP basic-auth dialogs are not shown** (proxy authentication is handled automatically).
-- Website permission requests (camera, microphone, location, notifications) are denied.
-- **Encrypted browser-data backup is not implemented.** Backups contain metadata only — no cookies,
-  logins, site storage or proxy passwords. Restored profiles start logged out and need their proxy
-  password re-entered. (Chromium keeps a profile's files open while the app runs, so a safe restore
-  needs a restart-staged design; it was left out rather than shipped half-working.)
+- Website permission requests are denied unless allowed in the profile's settings. *Location* may
+  not work even when allowed, because this Electron build has no location provider.
+- **Full backups of profiles used since the app started** are made at the next start (Chromium
+  keeps their files open until the app exits). Proxy passwords are never backed up. Caches are not
+  backed up. A forgotten backup password cannot be recovered.
+- **Logins after restore** can still be ended by websites, and restored cookies may not work on a
+  different PC or Windows account.
+- **IP geolocation is approximate** and comes from third-party services (`ipwho.is`, `ipapi.co`)
+  that can rate-limit; the time zone of an IP can be wrong. Use Manual time zone when needed.
+- The time zone/language override applies to web pages of the profile (tabs and pop-ups). Pop-up
+  windows opened by scripts may start loading before the override is applied to them (they share
+  the opener's renderer in most cases, which already has it).
+- Only one browser engine version is installed (the one shipped with Electron); the *Chrome*
+  User-Agent option keeps that same real version. Multiple Chromium versions are not supported.
 - Per-profile memory is an attribution of renderer processes; GPU, network and browser processes
   are shared and shown as such, so per-profile numbers do not add up to the total.
 - Bulk actions run one profile after another; very large selections take a few seconds.
@@ -309,5 +467,5 @@ scripts/smoke-fixtures.mjs   Local proxy/endpoint servers used only by the smoke
 - The EXEs are unsigned (SmartScreen warning) and there is no auto-update yet.
 - No downloads manager UI; downloads use the standard save dialog.
 
-This project does not implement fingerprint spoofing or any mechanism to bypass website security,
+This project does not implement fingerprint spoofing (no fake CPU, RAM, GPU, canvas or WebGL values, no stealth patches) or any mechanism to bypass website security,
 identity checks or access restrictions.
