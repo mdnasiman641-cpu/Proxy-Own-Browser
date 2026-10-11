@@ -162,6 +162,38 @@ describe('local backup and restore', () => {
     expect(t.app.db.get<{ payload: string }>('SELECT payload FROM jobs')!.payload).toBe('{}')
   })
 
+  it('reports each profile’s own backup status', async () => {
+    const a = t.app.service.create({ name: 'A' })
+    const b = t.app.service.create({ name: 'B' })
+    const c = t.app.service.create({ name: 'C' })
+    expect(t.center.backupStatus()[a.id]).toMatchObject({ lastMetadataAt: null, lastFullAt: null, fullScheduled: false, lastFullFailed: false })
+
+    // A settings backup of two profiles counts for both of them, not for the third.
+    await t.center.backupMetadata([a.id, b.id])
+    let status = t.center.backupStatus()
+    expect(status[a.id]!.lastMetadataAt).not.toBeNull()
+    expect(status[b.id]!.lastMetadataAt).not.toBeNull()
+    expect(status[c.id]!.lastMetadataAt).toBeNull()
+
+    t.seed(a.partition, 'a-cookie')
+    await t.center.backupFull([a.id], PASSWORD)
+    // B has no browser data yet, so its full backup fails.
+    await t.center.backupFull([b.id], PASSWORD)
+    t.seed(c.partition, 'c-cookie')
+    t.loaded.add(c.partition)
+    await t.center.backupFull([c.id], PASSWORD)
+    status = t.center.backupStatus()
+    expect(status[a.id]!.lastFullAt).not.toBeNull()
+    expect(status[a.id]!.lastFullFile).toMatch(/\.pobfull$/)
+    expect(status[b.id]).toMatchObject({ lastFullAt: null, lastFullFailed: true })
+    expect(status[c.id]).toMatchObject({ lastFullAt: null, fullScheduled: true })
+
+    t.loaded.clear()
+    await t.center.runPendingJobs()
+    expect(t.center.backupStatus()[c.id]).toMatchObject({ fullScheduled: false })
+    expect(t.center.backupStatus()[c.id]!.lastFullAt).not.toBeNull()
+  })
+
   it('rejects a damaged backup without touching the destination profile', async () => {
     const a = t.app.service.create({ name: 'Alpha' })
     t.seed(a.partition, 'v1')

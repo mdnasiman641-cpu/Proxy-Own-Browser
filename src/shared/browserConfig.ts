@@ -30,6 +30,18 @@ export type TimezoneMode = (typeof TIMEZONE_MODES)[number]
 export const USER_AGENT_MODES = ['default', 'chrome'] as const
 export type UserAgentMode = (typeof USER_AGENT_MODES)[number]
 
+/**
+ * Which network interfaces WebRTC may use, applied with Chromium's own WebRTC IP handling
+ * policy (the same setting Chrome exposes to extensions):
+ * - `default`: Chromium's normal behaviour (local addresses are hidden behind mDNS names).
+ * - `default_public_interface_only`: only the default public interface; no private addresses.
+ * - `disable_non_proxied_udp`: WebRTC only through the proxy (TCP), no direct UDP. Real-time
+ *   calls may stop working on sites and proxies that need UDP.
+ * Changing it is always the user's choice; the app never changes it on its own.
+ */
+export const WEBRTC_POLICIES = ['default', 'default_public_interface_only', 'disable_non_proxied_udp'] as const
+export type WebRtcPolicy = (typeof WEBRTC_POLICIES)[number]
+
 export interface BrowserConfig {
   /** BCP 47 language tag such as `en-US` or `bn-BD`; null keeps the app default. */
   language: string | null
@@ -40,6 +52,7 @@ export interface BrowserConfig {
   windowHeight: number
   zoomPercent: number
   userAgent: UserAgentMode
+  webrtcPolicy: WebRtcPolicy
   permissions: Record<ConfigurablePermission, PermissionSetting>
 }
 
@@ -60,6 +73,7 @@ export const DEFAULT_BROWSER_CONFIG: BrowserConfig = {
   windowHeight: 860,
   zoomPercent: 100,
   userAgent: 'default',
+  webrtcPolicy: 'default',
   permissions: { notifications: 'block', media: 'block', geolocation: 'block', 'clipboard-read': 'block' }
 }
 
@@ -135,6 +149,7 @@ export const browserConfigUpdateSchema = z
       .max(BROWSER_LIMITS.zoomMax, `Zoom can be at most ${BROWSER_LIMITS.zoomMax}%`)
       .optional(),
     userAgent: z.enum(USER_AGENT_MODES).optional(),
+    webrtcPolicy: z.enum(WEBRTC_POLICIES).optional(),
     permissions: z
       .object({
         notifications: permissionSchema.optional(),

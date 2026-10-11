@@ -98,6 +98,12 @@ export class SessionManager {
     if (ses) this.applyBrowserSettings(ses, profile)
   }
 
+  /** Partition name of a session this manager created (diagnostics), or null. */
+  partitionFor(ses: Session): string | null {
+    for (const [partition, known] of this.known) if (known === ses) return partition
+    return null
+  }
+
   profileIdFor(ses: Session): string | undefined {
     return this.profileBySession.get(ses)
   }

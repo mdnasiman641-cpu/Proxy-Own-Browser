@@ -7,6 +7,7 @@ import { errorMessage, unwrap } from '../../common/ipc'
 import { BackupChoiceDialog, FullBackupDialog } from '../components/BackupDialogs'
 import { BulkCreateWizard } from '../components/BulkCreateWizard'
 import { DuplicateDialog } from '../components/DuplicateDialog'
+import { BackupStatusLine } from '../components/BackupStatusLine'
 import { NetworkBadge } from '../components/NetworkStatusView'
 import { useSharedProxyGuard } from '../components/SharedProxyGuard'
 import { BulkResultDialog, GroupChip, GroupSelect, StatusBadge, TagInput, TagList } from '../components/Bits'
@@ -524,7 +525,10 @@ export function ProfilesPage({ data, createRequested, onCreateHandled, wizardTem
                       <td><GroupChip group={p.groupId ? groupById.get(p.groupId) : undefined} /></td>
                       <td><TagList tags={p.tags} /></td>
                       <td className="proxy-cell">{proxyCell(p)}</td>
-                      <td className="muted nowrap">{formatDate(p.lastOpenedAt)}</td>
+                      <td className="nowrap">
+                        <div className="muted">{formatDate(p.lastOpenedAt)}</div>
+                        <BackupStatusLine status={data.backups[p.id]} />
+                      </td>
                       <td className="actions-col">{rowActions(p, true)}</td>
                     </tr>
                   ))}
@@ -559,6 +563,8 @@ export function ProfilesPage({ data, createRequested, onCreateHandled, wizardTem
                     <dd>{proxyCell(p)}</dd>
                     <dt>{t('profiles.col.lastOpened')}</dt>
                     <dd>{formatDate(p.lastOpenedAt)}</dd>
+                    <dt>{t('details.backups')}</dt>
+                    <dd><BackupStatusLine status={data.backups[p.id]} /></dd>
                   </dl>
                   {rowActions(p)}
                 </article>

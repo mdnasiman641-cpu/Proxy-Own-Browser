@@ -52,7 +52,9 @@ describe('dashboard translations', () => {
       'hist.status.': ['success', 'failed', 'scheduled', 'partial'],
       'hist.kind.': ['metadata', 'full', 'restore', 'duplicate'],
       'browser.tz.': ['off', 'auto', 'manual'],
-      'jobs.kind.': ['full-backup', 'full-restore', 'copy-data']
+      'jobs.kind.': ['full-backup', 'full-restore', 'copy-data'],
+      'diag.verdict.': ['pass', 'fail', 'warning', 'unknown', 'info'],
+      'webrtc.': ['default', 'default_public_interface_only', 'disable_non_proxied_udp', 'default.hint', 'default_public_interface_only.hint', 'disable_non_proxied_udp.hint']
     }
     for (const [prefix, names] of Object.entries(families)) {
       for (const name of names) expect(`${prefix}${name}` in en).toBe(true)

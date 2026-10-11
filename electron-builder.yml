@@ -15,6 +15,9 @@ files:
 npmRebuild: false
 
 win:
+  # Generated from the app's brand mark (build/icon.png is the 1024 px source).
+  icon: build/icon.ico
+  legalTrademarks: Proxy Own Browser
   target:
     - target: nsis
       arch: [x64]
@@ -31,6 +34,9 @@ nsis:
   artifactName: Proxy-Own-Browser-Setup-${version}.${ext}
   # Keep profiles, cookies and settings when uninstalling unless the user removes them manually.
   deleteAppDataOnUninstall: false
+  installerIcon: build/icon.ico
+  uninstallerIcon: build/icon.ico
+  uninstallDisplayName: Proxy Own Browser ${version}
 
 portable:
   artifactName: Proxy-Own-Browser-Portable-${version}.${ext}

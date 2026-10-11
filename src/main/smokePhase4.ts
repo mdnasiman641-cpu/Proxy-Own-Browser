@@ -281,6 +281,19 @@ export async function phase4SetupChecks(ctx: SmokeContext, check: Check, f: Fixt
   )
   check('profile details page shows network, browser settings and runtime panels', detailsShown, banglaHeading)
   check('new pages are translated (Bangla)', banglaHeading === 'প্রক্সি ও আইপি অবস্থা', banglaHeading)
+  const panelsShown =
+    (await pageHas(dash, '[data-testid="diagnostics-panel"]')) &&
+    (await pageHas(dash, '[data-testid="storage-panel"]')) &&
+    (await pageHas(dash, '[data-testid="backup-facts"]')) &&
+    (await pageHas(dash, '[data-testid="webrtc-setting"]'))
+  await dash.executeJavaScript(`document.querySelector('[data-testid="run-diagnostics"]').click()`)
+  const diagRendered = await pageHas(dash, '[data-testid="diag-dns"][data-verdict]')
+  const diagHeading = await dash.executeJavaScript(`document.querySelector('[data-testid="diagnostics-panel"] h2')?.textContent ?? ''`)
+  check(
+    'details page shows diagnostics (with results), own-vs-shared storage, backup status and the WebRTC setting',
+    panelsShown && diagRendered && diagHeading === 'ডায়াগনস্টিকস',
+    diagHeading
+  )
   await dash.executeJavaScript(`document.querySelector('[data-nav="backup"]').click()`)
   const backupShown = (await pageHas(dash, '[data-testid="backup-folder"]')) && (await pageHas(dash, '[data-testid="backup-files"] table'))
   const folderText = await dash.executeJavaScript(`document.querySelector('[data-testid="backup-folder"] .mono')?.textContent ?? ''`)
@@ -330,6 +343,12 @@ export async function phase4VerifyChecks(ctx: SmokeContext, check: Check, f: Fix
   check('the scheduled backup exists and its checksums verify', verifyB?.ok === true, verifyB?.message)
   const wrong = await ctx.backupCenter.verify(fileA, 'not-the-password')
   check('a wrong backup password is rejected', !wrong.ok && /password is not correct/.test(wrong.message), wrong.message)
+  const bStatus = ctx.backupCenter.backupStatus()
+  check(
+    'each profile shows its own backup status (after the scheduled backup ran at start-up)',
+    bStatus[a.id]?.lastFullAt !== null && bStatus[b.id]?.lastFullAt !== null && bStatus[b.id]?.fullScheduled === false,
+    JSON.stringify({ a: bStatus[a.id], b: bStatus[b.id] })
+  )
 
   // A damaged copy is rejected and the original profile is not touched.
   const damaged = fileA.replace(/\.pobfull$/, '-damaged.pobfull')

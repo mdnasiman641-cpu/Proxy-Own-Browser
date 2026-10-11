@@ -1,4 +1,5 @@
 import type { WebContents } from 'electron'
+import type { ProfileDiagnostics } from '@shared/diagnostics'
 import type { BrowserTimezoneReport, ProfileNetworkStatus } from '@shared/types'
 import { httpJson, pageHas, viaDashboard, waitFor, type Check, type Fixtures, type SmokeContext } from './smokeHelpers'
 
@@ -55,6 +56,11 @@ export async function locationChecks(ctx: SmokeContext, check: Check, f: Fixture
     `${nyStatus.ip} ${nyStatus.geo.data?.city} ${nyStatus.geo.data?.timezone} | ${chiStatus.ip} ${chiStatus.geo.data?.city} ${chiStatus.geo.data?.timezone}`
   )
   check('different proxies are not flagged as sharing an exit IP', !chiStatus.sameExitIpAs.some((p) => p.id === nyId))
+  check(
+    'a successful test is recorded as the last successful test with its exit IP',
+    nyStatus.lastSuccessAt === nyStatus.checkedAt && nyStatus.lastSuccessIp === ny.ip,
+    `${nyStatus.lastSuccessAt} ${nyStatus.lastSuccessIp}`
+  )
 
   // Both open at the same time; each page sees its own proxy's IP and time zone.
   await ctx.windows.open(created.id, { initialUrl: 'about:blank' })
@@ -78,6 +84,37 @@ export async function locationChecks(ctx: SmokeContext, check: Check, f: Fixture
   })
   check('the app verifies the time zone pages report in each open window', reportsOk)
 
+  // Diagnostics of an open profile: each section reports its own test result.
+  const runDiag = (id: string): Promise<ProfileDiagnostics> =>
+    viaDashboard<ProfileDiagnostics>(ctx, `window.pob.runDiagnostics(${JSON.stringify(id)}, { stun: false })`)
+  const diag = await runDiag(created.id)
+  check(
+    'diagnostics: proxy connection, session proxy route and verified public IP',
+    diag.proxyConnection.verdict === 'pass' && diag.proxyRoute.verdict === 'pass' && diag.publicIp.observed === chi.ip,
+    `${diag.proxyConnection.verdict} ${diag.proxyRoute.verdict} (${diag.proxyRoute.observed}) ${diag.publicIp.observed}`
+  )
+  check(
+    'diagnostics: page-reported time zone, User-Agent and session partition match the profile',
+    diag.pageTested && diag.timezone.verdict === 'pass' && diag.timezone.observed === chi.timezone && diag.userAgent.verdict === 'pass' &&
+      diag.partition.verdict === 'pass' && diag.partition.observed === ctx.profiles.get(created.id).partition,
+    `${diag.timezone.observed} ${diag.userAgent.verdict} ${diag.partition.observed}`
+  )
+  check('diagnostics: DNS is resolved by the HTTP proxy (PC DNS reported as unknown)', diag.dns.verdict === 'pass' && /cannot be observed/.test(diag.dns.detail), diag.dns.detail)
+  check(
+    'diagnostics: local WebRTC test ran without contacting a server, and no STUN test without consent',
+    (diag.webrtcLocal.verdict === 'pass' || diag.webrtcLocal.verdict === 'warning') && diag.webrtcStun === null,
+    `${diag.webrtcLocal.verdict}: ${diag.webrtcLocal.observed}`
+  )
+  const defaultCandidates = diag.webrtcLocal.candidates.length
+  await viaDashboard(ctx, `window.pob.updateProfile(${JSON.stringify(created.id)}, { browser: { webrtcPolicy: 'disable_non_proxied_udp' } })`)
+  const restricted = await runDiag(created.id)
+  check(
+    'WebRTC "only through the proxy": pages gather no direct candidates (applied to the open tab)',
+    restricted.webrtcPolicy === 'disable_non_proxied_udp' && restricted.webrtcLocal.verdict === 'pass' && restricted.webrtcLocal.candidates.length === 0,
+    `default: ${defaultCandidates} candidate(s); restricted: ${restricted.webrtcLocal.observed}`
+  )
+  await viaDashboard(ctx, `window.pob.updateProfile(${JSON.stringify(created.id)}, { browser: { webrtcPolicy: 'default' } })`)
+
   // The Proxies & location page lists each profile's own values.
   const dash = ctx.getDashboard()!.webContents
   await dash.executeJavaScript(`document.querySelector('[data-nav="proxy"]').click()`)
@@ -98,10 +135,17 @@ export async function locationChecks(ctx: SmokeContext, check: Check, f: Fixture
 
   // Changing one profile's proxy re-detects only that profile; the other is untouched.
   const nyBefore = JSON.stringify({ browser: ctx.profiles.get(nyId).browser, proxy: ctx.profiles.get(nyId).proxy, net: ctx.network.status(nyId) })
-  await viaDashboard(
-    ctx,
-    `window.pob.updateProfile(${JSON.stringify(created.id)}, { proxy: { enabled: true, protocol: 'http', host: '127.0.0.1', port: ${f.labProxyPort}, bypassRules: '<-loopback>' } })`
+  const labProxy = `{ enabled: true, protocol: 'http', host: '127.0.0.1', port: ${f.labProxyPort}, bypassRules: '<-loopback>' }`
+  // The profile is open: the change is refused until the user confirms it.
+  const unconfirmed = (await ctx.getDashboard()!.webContents.executeJavaScript(
+    `window.pob.updateProfile(${JSON.stringify(created.id)}, { proxy: ${labProxy} })`
+  )) as { ok: boolean; error?: string }
+  check(
+    'changing the proxy of an open profile needs confirmation (nothing changed before it)',
+    !unconfirmed.ok && /This profile is open/.test(unconfirmed.error ?? '') && ctx.profiles.get(created.id).proxy?.port === f.openProxyPort,
+    unconfirmed.error
   )
+  await viaDashboard(ctx, `window.pob.updateProfile(${JSON.stringify(created.id)}, { proxy: ${labProxy} }, { confirmRunningProxyChange: true })`)
   const labTab = await loadPage(ctx, f, created.id, 72)
   const labTz = await labTab.executeJavaScript(TZ_SCRIPT)
   const nyAfter = JSON.stringify({ browser: ctx.profiles.get(nyId).browser, proxy: ctx.profiles.get(nyId).proxy, net: ctx.network.status(nyId) })

@@ -6,6 +6,7 @@ import {
   isValidLanguageTag,
   isValidTimeZone,
   supportedTimeZones,
+  WEBRTC_POLICIES,
   type BrowserConfig,
   type ConfigurablePermission,
   type TimezoneMode
@@ -14,9 +15,11 @@ import type { BackupHistoryEntry, Profile, RuntimeInfo } from '@shared/types'
 import { Icon } from '../../common/Icon'
 import { errorMessage, unwrap } from '../../common/ipc'
 import { FullBackupDialog, formatBytes } from '../components/BackupDialogs'
+import { BackupStatusFacts } from '../components/BackupStatusLine'
 import { GroupChip, StatusBadge, TagList } from '../components/Bits'
 import { DuplicateDialog } from '../components/DuplicateDialog'
 import { Modal } from '../components/Modal'
+import { DiagnosticsPanel } from '../components/DiagnosticsPanel'
 import { NetworkPanel } from '../components/NetworkStatusView'
 import { ProfileAvatar } from '../components/ProfileBadge'
 import { ProfileForm } from '../components/ProfileForm'
@@ -51,12 +54,14 @@ export function ProfileDetailsPage({ data, profileId, onBack }: Props) {
   const [history, setHistory] = useState<BackupHistoryEntry[]>([])
   const [dialog, setDialog] = useState<Dialog>(null)
   const { guard, dialog: sharedDialog } = useSharedProxyGuard()
+  const { refreshBackups } = data
 
   const loadHistory = useCallback(() => {
     unwrap(window.pob.backupHistory(profileId))
       .then(setHistory)
       .catch(() => setHistory([]))
-  }, [profileId])
+    void refreshBackups()
+  }, [profileId, refreshBackups])
 
   useEffect(() => {
     unwrap(window.pob.runtimeInfo())
@@ -181,6 +186,7 @@ export function ProfileDetailsPage({ data, profileId, onBack }: Props) {
             <div className="panel-head">
               <h2>{t('details.backups')}</h2>
             </div>
+            <BackupStatusFacts status={data.backups[profile.id]} />
             {!data.settings?.backupFolder && <div className="alert info small">{t('backup.chooseFolderFirst')}</div>}
             <div className="button-row">
               <button type="button" className="button small" disabled={!data.settings?.backupFolder} onClick={() => void backupMetadata()}>
@@ -196,6 +202,17 @@ export function ProfileDetailsPage({ data, profileId, onBack }: Props) {
               <HistoryList entries={history} />
             )}
           </div>
+
+          <DiagnosticsPanel
+            profile={profile}
+            running={running}
+            onRestrictWebRtc={async () => {
+              await data.updateProfile(profile.id, { browser: { webrtcPolicy: 'disable_non_proxied_udp' } })
+              data.notify('success', t('details.saved'))
+            }}
+          />
+
+          <StoragePanel />
 
           <RuntimePanel runtime={runtime} />
         </div>
@@ -269,6 +286,24 @@ export function HistoryList({ entries, showProfile = false }: { entries: BackupH
         </li>
       ))}
     </ul>
+  )
+}
+
+/**
+ * What belongs to this profile alone and what every profile shares with this PC. Shown so the
+ * isolation is not overstated.
+ */
+function StoragePanel() {
+  const { t } = useI18n()
+  return (
+    <div className="panel" data-testid="storage-panel">
+      <h2>{t('storage.title')}</h2>
+      <h3 className="sub-heading">{t('storage.own')}</h3>
+      <p className="small">{t('storage.ownList')}</p>
+      <h3 className="sub-heading">{t('storage.shared')}</h3>
+      <p className="small">{t('storage.sharedList')}</p>
+      <p className="small muted">{t('storage.note')}</p>
+    </div>
   )
 }
 
@@ -449,6 +484,20 @@ function BrowserSettingsPanel({
           </span>
         </label>
         <p className="small muted">{t('browser.uaNote')}</p>
+      </fieldset>
+
+      <fieldset className="choice-list" data-testid="webrtc-setting">
+        <legend>{t('browser.webrtc')}</legend>
+        {WEBRTC_POLICIES.map((policy) => (
+          <label key={policy} className={`choice ${draft.webrtcPolicy === policy ? 'chosen' : ''}`}>
+            <input type="radio" name="webrtc" checked={draft.webrtcPolicy === policy} onChange={() => set('webrtcPolicy', policy)} />
+            <span>
+              <strong>{t(`webrtc.${policy}` as TKey)}</strong>
+              <small>{t(`webrtc.${policy}.hint` as TKey)}</small>
+            </span>
+          </label>
+        ))}
+        <p className="small muted">{t('browser.webrtcNote')}</p>
       </fieldset>
 
       <fieldset className="choice-list">

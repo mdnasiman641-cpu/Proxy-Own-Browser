@@ -24,7 +24,7 @@ export function BackupPage({ data }: { data: AppData }) {
   const [dialog, setDialog] = useState<Dialog>(null)
   const [lastImport, setLastImport] = useState<BackupImportResult | null>(null)
   const folder = data.settings?.backupFolder ?? null
-  const { notify } = data
+  const { notify, refreshBackups } = data
 
   const reload = useCallback(async () => {
     try {
@@ -36,11 +36,12 @@ export function BackupPage({ data }: { data: AppData }) {
       setFiles(list)
       setHistory(hist)
       setJobs(pending)
+      void refreshBackups()
     } catch (error) {
       setFiles([])
       notify('error', errorMessage(error))
     }
-  }, [notify])
+  }, [notify, refreshBackups])
 
   useEffect(() => {
     void reload()

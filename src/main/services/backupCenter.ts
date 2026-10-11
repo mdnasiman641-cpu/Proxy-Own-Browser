@@ -13,6 +13,7 @@ import type {
   DuplicateResult,
   FullBackupOutcome,
   PendingJob,
+  ProfileBackupStatus,
   Profile,
   RestoreOutcome,
   RestoreRequest,
@@ -171,7 +172,7 @@ export class BackupCenter {
       sizeBytes: Buffer.byteLength(text),
       sha256,
       details: `${profiles.length} profile(s); proxy passwords and browser data are not included.`
-    })
+    }, profiles.map((p) => p.id))
     this.deps.logger.info(`Metadata backup written (${profiles.length} profiles)`)
     return entry
   }
@@ -862,13 +863,64 @@ export class BackupCenter {
     }))
   }
 
-  private addHistory(entry: Omit<BackupHistoryEntry, 'id' | 'createdAt'>): BackupHistoryEntry {
+  /**
+   * Backup state of each profile: newest successful settings backup that covered it, newest
+   * full backup, whether the latest full attempt failed and whether one is scheduled.
+   */
+  backupStatus(): Record<string, ProfileBackupStatus> {
+    const result: Record<string, ProfileBackupStatus> = {}
+    for (const profile of this.deps.profiles.list()) {
+      result[profile.id] = { profileId: profile.id, lastMetadataAt: null, lastFullAt: null, lastFullFile: null, lastFullFailed: false, fullScheduled: false }
+    }
+    const rows = this.deps.db.all<{ profile_id: string | null; profile_ids: string | null; kind: string; status: string; file_name: string | null; created_at: string }>(
+      `SELECT profile_id, profile_ids, kind, status, file_name, created_at FROM backup_history
+       WHERE kind IN ('metadata', 'full') ORDER BY created_at ASC`
+    )
+    for (const row of rows) {
+      if (row.kind === 'metadata' && row.status === 'success') {
+        for (const id of coveredProfiles(row.profile_id, row.profile_ids)) {
+          const entry = result[id]
+          if (entry) entry.lastMetadataAt = row.created_at
+        }
+      } else if (row.kind === 'full' && row.profile_id) {
+        const entry = result[row.profile_id]
+        if (!entry) continue
+        if (row.status === 'success') {
+          entry.lastFullAt = row.created_at
+          entry.lastFullFile = row.file_name
+          entry.lastFullFailed = false
+        } else if (row.status === 'failed') {
+          entry.lastFullFailed = true
+        }
+      }
+    }
+    for (const job of this.pendingJobs()) {
+      const entry = result[job.profileId]
+      if (job.kind === 'full-backup' && entry) entry.fullScheduled = true
+    }
+    return result
+  }
+
+  private addHistory(entry: Omit<BackupHistoryEntry, 'id' | 'createdAt'>, profileIds?: string[]): BackupHistoryEntry {
     const full: BackupHistoryEntry = { ...entry, id: randomUUID(), createdAt: this.now().toISOString() }
     this.deps.db.run(
-      `INSERT INTO backup_history (id, profile_id, profile_name, kind, status, file_name, file_path, size_bytes, sha256, details, created_at)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-      [full.id, full.profileId, full.profileName, full.kind, full.status, full.fileName, full.path, full.sizeBytes, full.sha256, full.details, full.createdAt]
+      `INSERT INTO backup_history (id, profile_id, profile_name, kind, status, file_name, file_path, size_bytes, sha256, details, created_at, profile_ids)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      [full.id, full.profileId, full.profileName, full.kind, full.status, full.fileName, full.path, full.sizeBytes, full.sha256, full.details, full.createdAt, profileIds ? JSON.stringify(profileIds) : null]
     )
     return full
   }
+}
+
+/** Profiles a history row covers: its single profile, or the stored list for multi-profile backups. */
+export function coveredProfiles(profileId: string | null, profileIds: string | null): string[] {
+  if (profileIds) {
+    try {
+      const parsed = JSON.parse(profileIds) as unknown
+      if (Array.isArray(parsed)) return parsed.filter((x): x is string => typeof x === 'string')
+    } catch {
+      // fall through to the single profile
+    }
+  }
+  return profileId ? [profileId] : []
 }

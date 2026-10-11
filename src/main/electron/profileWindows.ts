@@ -7,6 +7,8 @@ import {
   type MenuItemConstructorOptions,
   type WebContents
 } from 'electron'
+import type { WebRtcPolicy } from '@shared/browserConfig'
+import type { PageProbeResult } from '@shared/diagnostics'
 import { Events } from '@shared/ipc'
 import { describeProxy } from '@shared/proxy'
 import type {
@@ -28,6 +30,7 @@ import { deriveStatuses, statusOf } from '../services/runtimeStatus'
 import type { SettingsService } from '../services/settingsService'
 import { TabList, type AddTabOptions } from '../services/tabList'
 import type { LaunchPlan } from '../services/networkService'
+import { parseProbeResult, probeScript } from '../services/diagnostics'
 import { applyPageEmulation, isEmpty, type PageEmulation } from './pageEmulation'
 import { appWebPreferences, loadPage, lockDownAppContents } from './pages'
 import { acceptLanguageForProfile, userAgentFor, type SessionManager } from './sessionManager'
@@ -106,6 +109,16 @@ function canonicalZone(zone: string): string {
 
 /** Read in an isolated world, so page scripts cannot change what is reported. */
 const REPORTED_TZ_WORLD = 1001
+/** Diagnostics run in their own isolated world; the page cannot see or alter the results. */
+const DIAGNOSTICS_WORLD = 1002
+
+export interface PageDiagnostics {
+  page: PageProbeResult | null
+  pagePartition: string | null
+  resolvedProxy: string | null
+  expected: { timezone: string | null; locale: string | null; userAgent: string }
+  problem: string | null
+}
 
 function emulationOf(profile: Profile, plan: Pick<LaunchPlan, 'timezone' | 'locale'>): PageEmulation {
   return {
@@ -274,6 +287,10 @@ export class ProfileWindowManager {
     if (proxyChanged) await this.deps.sessions.refreshProxy(profile)
     if (browserChanged) {
       this.deps.sessions.refreshBrowserSettings(profile)
+      if (before.webrtcPolicy !== profile.browser.webrtcPolicy) {
+        // New WebRTC connections use the new setting; pages already open keep existing ones.
+        for (const tab of entry.tabs.values()) applyWebRtcPolicy(tab.view.webContents, profile.browser.webrtcPolicy)
+      }
       if (before.zoomPercent !== profile.browser.zoomPercent) {
         for (const tab of entry.tabs.values()) {
           if (!tab.view.webContents.isDestroyed()) tab.view.webContents.setZoomFactor(profile.browser.zoomPercent / 100)
@@ -349,6 +366,39 @@ export class ProfileWindowManager {
       this.pushState(entry)
     }
     if (previous?.reported !== reported || previous?.matches !== matches) this.deps.onTimezoneReport?.(entry.profile.id)
+  }
+
+  /**
+   * Runs the page part of the diagnostics in the active tab of an open profile window: what the
+   * page reports (time zone, language, User-Agent, WebRTC candidates), which session it runs
+   * in, and the proxy Chromium resolves for that session. Returns null when the profile is not
+   * open. The STUN test contacts `stunServer` and only runs when one is given.
+   */
+  async diagnosePage(profileId: string, stunServer: string | null): Promise<PageDiagnostics | null> {
+    const entry = this.windows.get(profileId)
+    if (!entry || entry.window.isDestroyed()) return null
+    const activeId = entry.tabs.active
+    const tab = activeId ? entry.tabs.get(activeId) : undefined
+    const contents = tab && tab.ready && !tab.crashed ? tab.view.webContents : undefined
+    const expected = { timezone: entry.emulation.timezone, locale: entry.emulation.locale, userAgent: entry.emulation.userAgent }
+    if (!contents || contents.isDestroyed()) {
+      return { page: null, pagePartition: null, resolvedProxy: null, expected, problem: 'No ready tab to test. Open a page in the profile and try again.' }
+    }
+    let resolvedProxy: string | null = null
+    try {
+      resolvedProxy = await contents.session.resolveProxy('https://www.example.com/')
+    } catch {
+      resolvedProxy = null
+    }
+    let page: PageProbeResult | null = null
+    let problem: string | null = null
+    try {
+      page = parseProbeResult(await contents.executeJavaScriptInIsolatedWorld(DIAGNOSTICS_WORLD, [{ code: probeScript(stunServer) }]))
+      if (!page) problem = 'The page did not return a test result.'
+    } catch (error) {
+      problem = `The page test could not run: ${error instanceof Error ? error.message : String(error)}`
+    }
+    return { page, pagePartition: this.deps.sessions.partitionFor(contents.session) ?? 'another session', resolvedProxy, expected, problem }
   }
 
   /** Current emulation of an open window (for tests and the details panel). */
@@ -571,6 +621,8 @@ export class ProfileWindowManager {
         zoomFactor: entry.profile.browser.zoomPercent / 100
       }
     })
+    // Before any page loads, so the profile's WebRTC setting covers the first connection.
+    applyWebRtcPolicy(view.webContents, entry.profile.browser.webrtcPolicy)
     const tab: Tab = { id: nextTabId(), view, error: null, crashed: false, ready: isEmpty(entry.emulation), pendingUrl: null }
     entry.tabs.add(tab.id, tab, options)
     this.attachTabHandlers(entry, tab)
@@ -766,6 +818,7 @@ export class ProfileWindowManager {
       }
     })
     contents.on('did-create-window', (child) => {
+      applyWebRtcPolicy(child.webContents, entry.profile.browser.webrtcPolicy)
       void applyPageEmulation(child.webContents, entry.emulation, this.deps.logger)
       this.guardWebContents(child.webContents, entry)
     })
@@ -856,4 +909,10 @@ export class ProfileWindowManager {
       event.preventDefault()
     })
   }
+}
+
+/** Applies the profile's WebRTC IP handling setting to one page (tab or pop-up). */
+function applyWebRtcPolicy(contents: WebContents, policy: WebRtcPolicy): void {
+  if (contents.isDestroyed()) return
+  contents.setWebRTCIPHandlingPolicy(policy)
 }

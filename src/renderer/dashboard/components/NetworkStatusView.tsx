@@ -93,6 +93,17 @@ export function NetworkPanel({ profile, status, checking, onCheck, geoEnabled, r
             )}
             <dt>{t('net.checkedAt')}</dt>
             <dd>{status ? formatDate(status.checkedAt) : t('net.never')}</dd>
+            <dt>{t('net.lastSuccess')}</dt>
+            <dd data-testid="last-success">
+              {status?.lastSuccessAt ? (
+                <>
+                  {formatDate(status.lastSuccessAt)}
+                  {status.lastSuccessIp && <span className="muted small mono"> ({status.lastSuccessIp})</span>}
+                </>
+              ) : (
+                t('net.never')
+              )}
+            </dd>
           </dl>
           {status && !status.proxy.ok && <p className="small">{status.proxy.message}</p>}
         </section>

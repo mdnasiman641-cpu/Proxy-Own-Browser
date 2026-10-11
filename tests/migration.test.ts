@@ -39,8 +39,8 @@ describe('database migrations', () => {
     await writeV1Database(file)
 
     const { db, migratedFrom, preMigrationBackup } = AppDatabase.open(await loadSqlJs(), file)
-    expect(SCHEMA_VERSION).toBe(4)
-    expect(db.schemaVersion).toBe(4)
+    expect(SCHEMA_VERSION).toBe(5)
+    expect(db.schemaVersion).toBe(5)
     expect(migratedFrom).toBe(1)
     db.close()
 
@@ -63,7 +63,7 @@ describe('database migrations', () => {
     expect(service.update(shop.id, { groupId: group.id, tags: ['fb'] })).toMatchObject({ groupId: group.id, tags: ['fb'] })
 
     // A copy of the pre-upgrade file is kept and is still a valid v1 database.
-    expect(preMigrationBackup).toMatch(/profiles\.sqlite\.pre-v4-\d+\.bak$/)
+    expect(preMigrationBackup).toMatch(/profiles\.sqlite\.pre-v5-\d+\.bak$/)
     const SQL = await loadSqlJs()
     const old = new SQL.Database(readFileSync(preMigrationBackup!))
     expect((old.exec('PRAGMA user_version')[0] as { values: unknown[][] }).values[0]![0]).toBe(1)
@@ -124,6 +124,11 @@ describe('database migrations', () => {
     const { db, migratedFrom } = AppDatabase.open(SQL, file)
     expect(migratedFrom).toBe(3)
     expect(db.get<{ geo_checked_at: string }>('SELECT geo_checked_at FROM profile_network_status')!.geo_checked_at).toBe('2026-10-01T00:00:00.000Z')
+    // v5: the earlier successful test is kept as the last successful one.
+    expect(db.get<{ last_success_at: string; last_success_ip: string }>('SELECT last_success_at, last_success_ip FROM profile_network_status')).toEqual({
+      last_success_at: '2026-10-01T00:00:00.000Z',
+      last_success_ip: '203.0.113.7'
+    })
     db.close()
     const { service } = await createService({ filePath: file })
     expect(service.get(id1).browser).toMatchObject({ timezoneMode: 'manual', timezoneManual: 'Asia/Dhaka', zoomPercent: 125 })

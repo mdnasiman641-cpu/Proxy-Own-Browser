@@ -76,7 +76,7 @@ jobs:
             if grep -qE 'FAIL|no result|FAILED' report.txt; then level=warning; else level=notice; fi
             emit $level "smoke test: summary and problems" report.txt
             grep -E '^\[smoke\] setup: PASS' ci-smoke.log | sed -e 's/^\[smoke\] setup: PASS //' > passes.txt || true
-            for part in 1 2 3 4; do
+            for part in 1 2 3 4 5; do
               sed -n "$(( (part - 1) * 30 + 1 )),$(( part * 30 ))p" passes.txt > report.txt
               [ -s report.txt ] && emit notice "smoke test: setup checks passed ($part)" report.txt
             done
@@ -91,6 +91,24 @@ jobs:
         run: |
           list=$(ls -l release/*/*.exe | awk '{printf "%s  %.1f MB%%0A", $NF, $5/1048576}')
           echo "::notice title=Windows executables::${list}"
+
+      - name: Check product metadata and icon of the executables
+        shell: pwsh
+        run: |
+          Add-Type -AssemblyName System.Drawing
+          $lines = foreach ($exe in Get-ChildItem release/*/*.exe) {
+            $v = $exe.VersionInfo
+            $icon = [System.Drawing.Icon]::ExtractAssociatedIcon($exe.FullName)
+            $bmp = $icon.ToBitmap()
+            # The brand icon is blue; Electron's default icon is not.
+            $px = $bmp.GetPixel([int]($bmp.Width / 2), [int]($bmp.Height * 0.85))
+            $blue = ($px.B -gt 180 -and $px.R -lt 90)
+            "$($exe.Name): product='$($v.ProductName)' version='$($v.ProductVersion)' company='$($v.CompanyName)' copyright='$($v.LegalCopyright)' brandIcon=$blue"
+            if ($v.ProductName -ne 'Proxy Own Browser' -or -not $blue) { $script:bad = $true }
+          }
+          $body = ($lines -join '%0A')
+          Write-Output "::notice title=Executable metadata::$body"
+          if ($script:bad) { Write-Output '::error title=Executable metadata::Product name or icon is not as expected'; exit 1 }
 
       - name: Upload Windows build
         uses: actions/upload-artifact@v4

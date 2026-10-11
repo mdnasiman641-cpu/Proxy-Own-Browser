@@ -71,6 +71,8 @@ export type ProfileUpdate = Partial<ProfileInput>
 export interface SaveProfileOptions {
   /** Save even though another profile already uses the same proxy endpoint. */
   allowSharedProxy?: boolean
+  /** The user confirmed changing the proxy of a profile whose window is open. */
+  confirmRunningProxyChange?: boolean
 }
 
 export const SEARCH_ENGINES = {
@@ -413,6 +415,9 @@ export interface ProfileNetworkStatus {
   /** The exit IP seen before the current one, and when the change was noticed (rotating proxies). */
   previousIp: string | null
   ipChangedAt: string | null
+  /** Last time this proxy was tested successfully, and the exit IP seen then. */
+  lastSuccessAt: string | null
+  lastSuccessIp: string | null
 }
 
 /** Time zone that JavaScript in an open profile window actually reported. */
@@ -484,6 +489,20 @@ export interface BackupHistoryEntry {
   sha256: string | null
   details: string
   createdAt: string
+}
+
+/** Backup state of one profile, derived from the backup history (newest successful backups). */
+export interface ProfileBackupStatus {
+  profileId: string
+  /** Newest successful settings (metadata) backup that included this profile. */
+  lastMetadataAt: string | null
+  /** Newest successful full browser-data backup of this profile. */
+  lastFullAt: string | null
+  lastFullFile: string | null
+  /** Newest full backup attempt failed (after the last success). */
+  lastFullFailed: boolean
+  /** A full backup is scheduled for the next app start. */
+  fullScheduled: boolean
 }
 
 export interface FullBackupRequest {
