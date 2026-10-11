@@ -71,11 +71,22 @@ export async function applyPageEmulation(
       }
     })
   }
+  let timer: ReturnType<typeof setTimeout> | undefined
   try {
-    await send(contents, emulation)
+    await Promise.race([
+      send(contents, emulation),
+      new Promise<never>((_, reject) => {
+        timer = setTimeout(() => reject(new Error('timed out')), APPLY_TIMEOUT_MS)
+      })
+    ])
     return true
   } catch (error) {
     logger.warn('Could not apply the time zone/locale to a tab', error)
     return false
+  } finally {
+    clearTimeout(timer)
   }
 }
+
+/** A tab that can't get its time zone/language in this time shows an error instead of loading. */
+const APPLY_TIMEOUT_MS = 15_000

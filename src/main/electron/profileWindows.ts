@@ -523,6 +523,9 @@ export class ProfileWindowManager {
     } else {
       // The time zone must be in place before the first page script runs.
       tab.pendingUrl = url
+      // DevTools-protocol commands reach the page through its renderer, so an empty page is
+      // loaded first; no website content runs before the overrides are in place.
+      view.webContents.loadURL('about:blank').catch(() => {})
       void applyPageEmulation(view.webContents, entry.emulation, this.deps.logger).then((ok) => {
         if (ok) {
           tab.ready = true
