@@ -8,6 +8,8 @@
   --strip: #e2e5ea;
   --danger: #b42318;
   --danger-soft: #fdecec;
+  --warn: #8a4b00;
+  --warn-soft: #fff4e0;
   color-scheme: light;
   font-family: 'Segoe UI', system-ui, -apple-system, sans-serif;
   font-size: 13px;
@@ -23,6 +25,8 @@
     --strip: #16191e;
     --danger: #ff8a80;
     --danger-soft: #3a1d1f;
+    --warn: #ffc56b;
+    --warn-soft: #3a2c14;
     color-scheme: dark;
   }
 }
@@ -115,3 +119,5 @@ html, body, #root { margin: 0; height: 100%; overflow: hidden; background: var(-
   from { left: -30%; }
   to { left: 100%; }
 }
+
+.error-chip.notice { background: var(--warn-soft); color: var(--warn); }

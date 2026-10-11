@@ -26,6 +26,8 @@ import { attributeMemory } from '../services/resourceAttribution'
 import { deriveStatuses, statusOf } from '../services/runtimeStatus'
 import type { SettingsService } from '../services/settingsService'
 import { TabList, type AddTabOptions } from '../services/tabList'
+import type { LaunchPlan } from '../services/networkService'
+import { applyPageEmulation, isEmpty, type PageEmulation } from './pageEmulation'
 import { appWebPreferences, loadPage, lockDownAppContents } from './pages'
 import type { SessionManager } from './sessionManager'
 
@@ -59,6 +61,12 @@ export interface ProfileWindow {
   /** Id of the tab whose view is currently attached to the window. */
   shownTabId: string | null
   toolbarReloads: number
+  /** Time zone and locale applied to every tab and pop-up of this window. */
+  emulation: PageEmulation
+  /** e.g. "Asia/Dhaka (automatic)" for the toolbar. */
+  timezoneLabel: string | null
+  /** Non-blocking warning shown in the toolbar (e.g. time zone could not be refreshed). */
+  notice: string | null
 }
 
 export interface ProfileWindowDeps {
@@ -69,6 +77,18 @@ export interface ProfileWindowDeps {
   onOpenProfilesChanged: (ids: string[]) => void
   /** Called (coalesced) whenever any profile's runtime status may have changed. */
   onStatusesChanged?: (statuses: Record<string, ProfileRuntimeStatus>) => void
+  /**
+   * Decides the time zone and locale before a window opens. Throws (with the reason shown to
+   * the user) when a required time zone can't be determined. Without it nothing is overridden.
+   */
+  planLaunch?: (profileId: string) => Promise<LaunchPlan>
+  /** Resource-pressure check for the resource panel. */
+  pressure?: (appMemoryMb: number) => ResourceUsage['pressure']
+}
+
+function timezoneLabel(plan: LaunchPlan): string | null {
+  if (!plan.timezone) return null
+  return `${plan.timezone} (${plan.timezoneSource === 'auto' ? 'automatic' : 'manual'})`
 }
 
 let tabSequence = 0
@@ -205,18 +225,61 @@ export class ProfileWindowManager {
       maxOpenProfiles: this.deps.settings.get().maxOpenProfiles,
       sharedMemoryMb: attribution.sharedMb,
       profiles: profiles.sort((a, b) => b.memoryMb - a.memoryMb),
-      measuredAt: new Date().toISOString()
+      measuredAt: new Date().toISOString(),
+      pressure: this.deps.pressure?.(attribution.totalMb) ?? { level: 'ok', messages: [] }
     }
   }
 
-  /** Called after a profile is edited, so open windows pick up name/proxy changes. */
+  /**
+   * Called after a profile is edited, so its open window picks up name, proxy and browser
+   * setting changes. Only this profile's session and tabs are touched.
+   */
   async profileUpdated(profile: Profile): Promise<void> {
     const entry = this.windows.get(profile.id)
     if (!entry) return
     const proxyChanged = JSON.stringify(entry.profile.proxy) !== JSON.stringify(profile.proxy)
+    const before = entry.profile.browser
+    const browserChanged = JSON.stringify(before) !== JSON.stringify(profile.browser)
     entry.profile = profile
     if (proxyChanged) await this.deps.sessions.refreshProxy(profile)
+    if (browserChanged) {
+      this.deps.sessions.refreshBrowserSettings(profile)
+      if (before.zoomPercent !== profile.browser.zoomPercent) {
+        for (const tab of entry.tabs.values()) {
+          if (!tab.view.webContents.isDestroyed()) tab.view.webContents.setZoomFactor(profile.browser.zoomPercent / 100)
+        }
+      }
+    }
+    const timeChanged =
+      proxyChanged ||
+      before.timezoneMode !== profile.browser.timezoneMode ||
+      before.timezoneManual !== profile.browser.timezoneManual ||
+      before.language !== profile.browser.language
+    if (timeChanged && this.deps.planLaunch) {
+      try {
+        const plan = await this.deps.planLaunch(profile.id)
+        await this.setEmulation(entry, plan)
+      } catch (error) {
+        // Keep the previous time zone in the open window and say why it was not changed.
+        entry.notice = `Time zone not updated: ${error instanceof Error ? error.message : String(error)}`
+      }
+    }
     this.pushState(entry)
+  }
+
+  /** Applies a new time zone/locale to every tab of an open window. */
+  private async setEmulation(entry: ProfileWindow, plan: LaunchPlan): Promise<void> {
+    entry.emulation = { timezone: plan.timezone, locale: plan.locale }
+    entry.timezoneLabel = timezoneLabel(plan)
+    entry.notice = plan.warnings[0] ?? null
+    await Promise.all(
+      entry.tabs.values().map((tab) => applyPageEmulation(tab.view.webContents, entry.emulation, this.deps.logger))
+    )
+  }
+
+  /** Current emulation of an open window (for tests and the details panel). */
+  emulationFor(profileId: string): PageEmulation | null {
+    return this.windows.get(profileId)?.emulation ?? null
   }
 
   // ---- tab actions (called from the toolbar via IPC and from shortcuts) ----
@@ -311,6 +374,8 @@ export class ProfileWindowManager {
       profileName: entry.profile.name,
       profileColor: entry.profile.color,
       proxyLabel: describeProxy(entry.profile.proxy),
+      timezoneLabel: entry.timezoneLabel,
+      notice: entry.notice,
       tabs: entry.tabs.values().map((tab) => this.tabState(tab)),
       activeTabId: entry.tabs.active
     }
@@ -320,11 +385,16 @@ export class ProfileWindowManager {
 
   private async create(profileId: string, options: { initialUrl?: string }): Promise<void> {
     const profile = this.deps.profiles.get(profileId)
+    // Decided before anything opens: if a required time zone can't be determined, the window
+    // is not opened at all rather than showing pages with this PC's time zone.
+    const plan: LaunchPlan = this.deps.planLaunch
+      ? await this.deps.planLaunch(profileId)
+      : { timezone: null, timezoneSource: 'off', locale: null, warnings: [] }
     await this.deps.sessions.prepare(profile)
 
     const window = new BrowserWindow({
-      width: 1280,
-      height: 820,
+      width: profile.browser.windowWidth,
+      height: profile.browser.windowHeight,
       minWidth: 640,
       minHeight: 400,
       show: false,
@@ -340,7 +410,10 @@ export class ProfileWindowManager {
       window,
       tabs: new TabList<Tab>(),
       shownTabId: null,
-      toolbarReloads: 0
+      toolbarReloads: 0,
+      emulation: { timezone: plan.timezone, locale: plan.locale },
+      timezoneLabel: timezoneLabel(plan),
+      notice: plan.warnings[0] ?? null
     }
     this.windows.set(profileId, entry)
     this.deps.onOpenProfilesChanged(this.openIds())
@@ -419,7 +492,8 @@ export class ProfileWindowManager {
         nodeIntegration: false,
         sandbox: true,
         webSecurity: true,
-        allowRunningInsecureContent: false
+        allowRunningInsecureContent: false,
+        zoomFactor: entry.profile.browser.zoomPercent / 100
       }
     })
     const tab: Tab = { id: nextTabId(), view, error: null, crashed: false }
@@ -427,7 +501,20 @@ export class ProfileWindowManager {
     this.attachTabHandlers(entry, tab)
     this.attachShortcuts(entry, view.webContents)
     if (entry.tabs.active === tab.id) this.showTab(entry, tab.id)
-    this.loadInTab(tab, url)
+    if (isEmpty(entry.emulation)) {
+      this.loadInTab(tab, url)
+    } else {
+      // The time zone must be in place before the first page script runs.
+      void applyPageEmulation(view.webContents, entry.emulation, this.deps.logger).then((ok) => {
+        if (ok) {
+          this.loadInTab(tab, url)
+        } else {
+          tab.error =
+            "This profile's time zone/language could not be applied, so the page was not loaded (it would have shown this PC's settings). Close the tab and try again."
+          this.pushState(entry)
+        }
+      })
+    }
     this.pushState(entry)
     return tab.id
   }
@@ -589,6 +676,9 @@ export class ProfileWindowManager {
       }
     })
     contents.on('did-create-window', (child) => {
+      if (!isEmpty(entry.emulation)) {
+        void applyPageEmulation(child.webContents, entry.emulation, this.deps.logger)
+      }
       this.guardWebContents(child.webContents, entry)
     })
     this.attachContextMenu(contents, entry)

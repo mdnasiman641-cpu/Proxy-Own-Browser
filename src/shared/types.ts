@@ -1,3 +1,5 @@
+import type { BrowserConfig, BrowserConfigUpdate } from './browserConfig'
+
 /** Proxy protocols Chromium supports for per-session proxy rules. */
 export const PROXY_PROTOCOLS = ['http', 'https', 'socks4', 'socks5'] as const
 export type ProxyProtocol = (typeof PROXY_PROTOCOLS)[number]
@@ -28,6 +30,8 @@ export interface Profile {
   groupId: string | null
   /** Tag names, sorted alphabetically. */
   tags: string[]
+  /** Language, time zone, window, zoom, User-Agent and permission settings. */
+  browser: BrowserConfig
   createdAt: string
   updatedAt: string
   lastOpenedAt: string | null
@@ -57,9 +61,17 @@ export interface ProfileInput {
   groupId?: string | null
   /** Replaces the profile's tags. Unknown tags are created. */
   tags?: string[]
+  /** Changes to the profile's browser settings (fields left out keep their value). */
+  browser?: BrowserConfigUpdate
 }
 
 export type ProfileUpdate = Partial<ProfileInput>
+
+/** Options the user confirms explicitly in the UI. */
+export interface SaveProfileOptions {
+  /** Save even though another profile already uses the same proxy endpoint. */
+  allowSharedProxy?: boolean
+}
 
 export const SEARCH_ENGINES = {
   google: { label: 'Google', template: 'https://www.google.com/search?q=%s' },
@@ -79,6 +91,12 @@ export interface AppSettings {
   confirmBeforeDelete: boolean
   /** Dashboard language. English is the default. */
   language: UiLanguage
+  /** Folder (on this PC) where backups are saved. null until the user chooses one. */
+  backupFolder: string | null
+  /** Refuse to give two profiles the same proxy endpoint unless the user confirms it. */
+  requireUniqueProxy: boolean
+  /** Look up country/city/time zone of the proxy's public IP after a proxy check. */
+  ipGeolocation: boolean
 }
 
 export const DEFAULT_SETTINGS: AppSettings = {
@@ -86,7 +104,10 @@ export const DEFAULT_SETTINGS: AppSettings = {
   searchEngine: 'google',
   maxOpenProfiles: 2,
   confirmBeforeDelete: true,
-  language: 'en'
+  language: 'en',
+  backupFolder: null,
+  requireUniqueProxy: false,
+  ipGeolocation: true
 }
 
 export interface ProfileGroup {
@@ -243,6 +264,10 @@ export interface NavigationState {
   profileName: string
   profileColor: string
   proxyLabel: string | null
+  /** Time zone applied to this window's pages, e.g. "Asia/Dhaka (automatic)"; null = this PC's. */
+  timezoneLabel: string | null
+  /** A warning about this window's settings (e.g. time zone could not be refreshed). */
+  notice: string | null
   /** Tabs of this profile window, in display order. */
   tabs: TabState[]
   activeTabId: string | null
@@ -315,7 +340,187 @@ export interface ResourceUsage {
   /** Per-profile breakdown for open profiles (page processes only). */
   profiles: ProfileResourceUsage[]
   measuredAt: string
+  /** Memory warnings based on this PC's free memory and the app's own use. */
+  pressure: ResourcePressure
 }
 
 /** Uniform response envelope for every IPC call. */
 export type IpcResult<T> = { ok: true; data: T } | { ok: false; error: string }
+
+// ---------------------------------------------------------------------------------------------
+// Phase 4: proxy/IP status, geolocation, backups and deferred jobs
+
+/** Approximate location of a public IP address, as reported by the geolocation service. */
+export interface IpGeolocation {
+  ip: string
+  country: string | null
+  countryCode: string | null
+  region: string | null
+  city: string | null
+  latitude: number | null
+  longitude: number | null
+  /** IANA time zone, e.g. Asia/Dhaka. */
+  timezone: string | null
+  /** Host name of the service that answered. */
+  provider: string
+}
+
+export type GeoStatus = 'success' | 'failed' | 'skipped'
+
+/** Result of one check of a profile's network route, stored per profile. */
+export interface ProfileNetworkStatus {
+  profileId: string
+  /** Proxy endpoint the check was made for (no credentials). */
+  routeKey: string
+  /** False when the profile's proxy changed after this check — the result is out of date. */
+  current: boolean
+  checkedAt: string
+  proxy: {
+    ok: boolean
+    status: ProxyTestStatus
+    message: string
+    responseTimeMs: number | null
+  }
+  /** Public IP seen through the proxy, or null when it could not be determined. */
+  ip: string | null
+  geo: {
+    status: GeoStatus
+    message: string
+    data: IpGeolocation | null
+  }
+  /** Last time zone detected successfully (kept when a later check fails). */
+  lastValidTimezone: string | null
+  lastValidTimezoneAt: string | null
+  /** Whether lastValidTimezone was detected for the profile's current proxy. */
+  lastValidTimezoneCurrent: boolean
+  /** Other profiles whose latest check saw the same public IP. */
+  sameExitIpAs: { id: string; name: string }[]
+}
+
+/** A profile whose proxy endpoint matches another profile's. */
+export interface ProxyConflict {
+  id: string
+  name: string
+}
+
+export type DuplicateMode = 'settings' | 'settings-and-data'
+
+export interface DuplicateRequest {
+  name: string
+  mode: DuplicateMode
+  copyProxy: boolean
+}
+
+export interface DuplicateResult {
+  profile: Profile
+  /** For settings-and-data: whether the data was copied now or after the next restart. */
+  data: 'not-requested' | 'copied' | 'scheduled'
+  details: string[]
+}
+
+export type BackupKind = 'metadata' | 'full'
+export type BackupScope = 'profile' | 'selected' | 'all'
+
+/** Information shown for a backup file without decrypting it. */
+export interface BackupFileInfo {
+  fileName: string
+  path: string
+  kind: BackupKind
+  sizeBytes: number
+  createdAt: string | null
+  appVersion: string | null
+  profiles: { id: string | null; name: string }[]
+  /** Result of reading the file header (full backups are verified completely with the password). */
+  readable: boolean
+  problem: string | null
+  encrypted: boolean
+}
+
+export interface BackupVerifyResult {
+  ok: boolean
+  message: string
+  files: number
+  bytes: number
+}
+
+export interface BackupHistoryEntry {
+  id: string
+  profileId: string | null
+  profileName: string
+  kind: BackupKind | 'restore' | 'duplicate'
+  status: 'success' | 'failed' | 'scheduled' | 'partial'
+  fileName: string | null
+  path: string | null
+  sizeBytes: number | null
+  sha256: string | null
+  details: string
+  createdAt: string
+}
+
+export interface FullBackupRequest {
+  profileIds: string[]
+  password: string
+}
+
+export interface FullBackupOutcome {
+  profileId: string
+  name: string
+  status: 'success' | 'failed' | 'scheduled'
+  fileName: string | null
+  sizeBytes: number | null
+  message: string
+  included: string[]
+  excluded: string[]
+}
+
+export type RestoreTarget = 'original' | 'new'
+
+export interface RestoreRequest {
+  path: string
+  target: RestoreTarget
+  /** Required for full (encrypted) backups. */
+  password?: string
+  /** For metadata backups with several profiles: which profile ids to restore (all when absent). */
+  profileIds?: string[]
+  /** Name for a profile restored as new (defaults to the backed-up name, renamed on clashes). */
+  newName?: string
+}
+
+export interface RestoreOutcome {
+  status: 'success' | 'failed' | 'scheduled'
+  message: string
+  profileIds: string[]
+  details: string[]
+}
+
+export interface PendingJob {
+  id: string
+  kind: 'full-backup' | 'full-restore' | 'copy-data'
+  profileId: string
+  profileName: string
+  createdAt: string
+}
+
+/** Real, unmodified facts about the installed runtime and this PC. */
+export interface RuntimeInfo {
+  electron: string
+  chrome: string
+  node: string
+  v8: string
+  defaultUserAgent: string
+  chromeUserAgent: string
+  host: {
+    platform: string
+    osRelease: string
+    arch: string
+    cpuModel: string
+    cpuCores: number
+    totalMemoryMb: number
+    freeMemoryMb: number
+  }
+}
+
+export interface ResourcePressure {
+  level: 'ok' | 'warning' | 'high'
+  messages: string[]
+}

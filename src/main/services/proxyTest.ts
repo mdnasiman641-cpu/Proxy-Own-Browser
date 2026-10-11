@@ -18,8 +18,8 @@ export interface IpCheckEndpoint {
 }
 
 export const DEFAULT_PROXY_TEST_TIMEOUT_MS = 15_000
-/** Bodies larger than this are not IP-check responses; the fetcher may stop reading. */
-export const MAX_RESPONSE_BYTES = 4096
+/** Bodies larger than this are not IP-check or IP-location responses; the fetcher stops reading. */
+export const MAX_RESPONSE_BYTES = 16_384
 
 export interface FetchResponse {
   status: number

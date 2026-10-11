@@ -1,4 +1,4 @@
-import { existsSync, readdirSync, readFileSync, writeFileSync } from 'node:fs'
+import { existsSync, mkdirSync, readdirSync, readFileSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 import { AppDatabase, MIGRATIONS, SCHEMA_VERSION } from '../src/main/services/database'
@@ -39,8 +39,8 @@ describe('database migrations', () => {
     await writeV1Database(file)
 
     const { db, migratedFrom, preMigrationBackup } = AppDatabase.open(await loadSqlJs(), file)
-    expect(SCHEMA_VERSION).toBe(2)
-    expect(db.schemaVersion).toBe(2)
+    expect(SCHEMA_VERSION).toBe(3)
+    expect(db.schemaVersion).toBe(3)
     expect(migratedFrom).toBe(1)
     db.close()
 
@@ -53,6 +53,8 @@ describe('database migrations', () => {
     expect(service.getProxyCredentials(shop.id)?.password).toBe('pw')
     expect(shop.groupId).toBeNull()
     expect(shop.tags).toEqual([])
+    // Existing profiles keep the previous browser behaviour: no time zone or language override.
+    expect(shop.browser).toMatchObject({ timezoneMode: 'off', language: null, zoomPercent: 100, userAgent: 'default' })
     expect(profiles.find((p) => p.name === 'Backup')!.lastOpenedAt).toBe('2026-01-04T00:00:00.000Z')
 
     // New features work on the upgraded data.
@@ -60,11 +62,57 @@ describe('database migrations', () => {
     expect(service.update(shop.id, { groupId: group.id, tags: ['fb'] })).toMatchObject({ groupId: group.id, tags: ['fb'] })
 
     // A copy of the pre-upgrade file is kept and is still a valid v1 database.
-    expect(preMigrationBackup).toMatch(/profiles\.sqlite\.pre-v2-\d+\.bak$/)
+    expect(preMigrationBackup).toMatch(/profiles\.sqlite\.pre-v3-\d+\.bak$/)
     const SQL = await loadSqlJs()
     const old = new SQL.Database(readFileSync(preMigrationBackup!))
     expect((old.exec('PRAGMA user_version')[0] as { values: unknown[][] }).values[0]![0]).toBe(1)
     old.close()
+  })
+
+  it('upgrades a v2 database (Phase 3) and keeps groups, tags and templates', async () => {
+    const file = join(dir.path, 'profiles.sqlite')
+    await writeV1Database(file)
+    const SQL = await loadSqlJs()
+    // Bring it to v2 exactly as Phase 3 did, then add Phase 3 data.
+    const raw = new SQL.Database(readFileSync(file))
+    raw.exec(MIGRATIONS[1]!.sql)
+    raw.run('PRAGMA user_version = 2')
+    raw.run(`INSERT INTO groups (id, name, name_key, color, created_at, updated_at) VALUES ('g1', 'Shops', 'shops', '#000000', 'x', 'x')`)
+    raw.run(`UPDATE profiles SET group_id = 'g1' WHERE name = 'Shop Page'`)
+    raw.run(`INSERT INTO tags (id, name, name_key, created_at) VALUES ('t1', 'fb', 'fb', 'x')`)
+    raw.run(`INSERT INTO profile_tags (profile_id, tag_id) VALUES ('11111111-1111-4111-8111-111111111111', 't1')`)
+    writeFileSync(file, raw.export())
+    raw.close()
+
+    const { db, migratedFrom, preMigrationBackup } = AppDatabase.open(SQL, file)
+    expect(migratedFrom).toBe(2)
+    expect(db.schemaVersion).toBe(3)
+    expect(existsSync(preMigrationBackup!)).toBe(true)
+    db.close()
+
+    const { service } = await createService({ filePath: file })
+    const shop = service.list().find((p) => p.name === 'Shop Page')!
+    expect(shop.groupId).toBe('g1')
+    expect(shop.tags).toEqual(['fb'])
+    expect(shop.partition).toBe('persist:profile-11111111-1111-4111-8111-111111111111')
+    expect(service.update(shop.id, { browser: { timezoneMode: 'manual', timezoneManual: 'Asia/Dhaka' } }).browser.timezoneManual).toBe('Asia/Dhaka')
+  })
+
+  it('does not upgrade when the safety copy cannot be verified', async () => {
+    const file = join(dir.path, 'profiles.sqlite')
+    await writeV1Database(file)
+    const before = readFileSync(file)
+    // A directory where the copy should go makes the copy fail.
+    const SQL = await loadSqlJs()
+    const realNow = Date.now
+    Date.now = () => 42
+    try {
+      mkdirSync(`${file}.pre-v${SCHEMA_VERSION}-42.bak`)
+      expect(() => AppDatabase.open(SQL, file)).toThrow(/verified safety copy/)
+    } finally {
+      Date.now = realNow
+    }
+    expect(readFileSync(file).equals(before)).toBe(true)
   })
 
   it('keeps used partitions reserved after the upgrade', async () => {

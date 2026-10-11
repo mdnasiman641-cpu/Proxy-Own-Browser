@@ -4,6 +4,7 @@ import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 import { managedPartitionDir, removeManagedPartitionDir } from '../src/main/services/managedPaths'
 import { attributeMemory } from '../src/main/services/resourceAttribution'
 import { deriveStatuses, statusOf } from '../src/main/services/runtimeStatus'
+import { DEFAULT_BROWSER_CONFIG } from '../src/shared/browserConfig'
 import { DEFAULT_QUERY, filterAndSortProfiles } from '../src/shared/profileQuery'
 import type { Profile, ProfileGroup } from '../src/shared/types'
 import { tempDir } from './helpers'
@@ -132,6 +133,7 @@ describe('profile filtering and sorting', () => {
     partition: `persist:profile-${name}`,
     proxy: null,
     groupId: null,
+    browser: DEFAULT_BROWSER_CONFIG,
     tags: [],
     createdAt: '2026-01-01',
     updatedAt: '2026-01-01',

@@ -1,4 +1,5 @@
 import { z } from 'zod'
+import { browserConfigUpdateSchema } from './browserConfig'
 import { PROXY_PROTOCOLS, SEARCH_ENGINES, UI_LANGUAGES, type SearchEngineId } from './types'
 
 export const LIMITS = {
@@ -193,7 +194,8 @@ export const profileInputSchema = z.object({
   startUrl: startUrlSchema.nullable().optional(),
   proxy: proxyInputSchema.optional(),
   groupId: groupIdSchema.nullable().optional(),
-  tags: tagListSchema.optional()
+  tags: tagListSchema.optional(),
+  browser: browserConfigUpdateSchema.optional()
 })
 
 export const profileUpdateSchema = z.object({
@@ -203,8 +205,44 @@ export const profileUpdateSchema = z.object({
   startUrl: startUrlSchema.nullable().optional(),
   proxy: proxyInputSchema.optional(),
   groupId: groupIdSchema.nullable().optional(),
-  tags: tagListSchema.optional()
+  tags: tagListSchema.optional(),
+  browser: browserConfigUpdateSchema.optional()
 })
+
+export const saveProfileOptionsSchema = z
+  .object({ allowSharedProxy: z.boolean().optional() })
+  .strict()
+  .optional()
+
+export const duplicateRequestSchema = z
+  .object({
+    name: nameSchema,
+    mode: z.enum(['settings', 'settings-and-data']),
+    copyProxy: z.boolean()
+  })
+  .strict()
+
+/** Backup passwords protect copies of cookies and logins, so a minimum length is enforced. */
+export const backupPasswordSchema = z
+  .string()
+  .min(8, 'The backup password must be at least 8 characters')
+  .max(256, 'The backup password is too long')
+
+export const fullBackupRequestSchema = z
+  .object({ profileIds: z.array(profileIdSchema).min(1).max(100), password: backupPasswordSchema })
+  .strict()
+
+export const restoreRequestSchema = z
+  .object({
+    path: z.string().min(1).max(1024),
+    target: z.enum(['original', 'new']),
+    password: z.string().max(256).optional(),
+    profileIds: z.array(profileIdSchema).max(5000).optional(),
+    newName: z.string().optional()
+  })
+  .strict()
+
+export const backupPathSchema = z.string().min(1).max(1024)
 
 export const templateProxySchema = z.discriminatedUnion('mode', [
   z.object({ mode: z.literal('none') }),
@@ -290,7 +328,15 @@ export const settingsUpdateSchema = z.object({
     .max(LIMITS.maxOpenProfilesCeiling, `At most ${LIMITS.maxOpenProfilesCeiling} windows`)
     .optional(),
   confirmBeforeDelete: z.boolean().optional(),
-  language: z.enum(UI_LANGUAGES).optional()
+  language: z.enum(UI_LANGUAGES).optional(),
+  backupFolder: z
+    .string()
+    .max(1024)
+    .refine((v) => /^([A-Za-z]:[\\/]|\\\\|\/)/.test(v), 'Backup folder must be an absolute path')
+    .nullable()
+    .optional(),
+  requireUniqueProxy: z.boolean().optional(),
+  ipGeolocation: z.boolean().optional()
 })
 
 export const addressInputSchema = z.string().max(LIMITS.urlMax)

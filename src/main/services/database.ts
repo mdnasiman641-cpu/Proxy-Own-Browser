@@ -1,3 +1,4 @@
+import { createHash } from 'node:crypto'
 import {
   copyFileSync,
   existsSync,
@@ -90,6 +91,61 @@ export const MIGRATIONS: readonly Migration[] = [
         updated_at  TEXT NOT NULL
       );
     `
+  },
+  {
+    // Phase 4: per-profile browser settings, proxy/IP status, backup history and deferred jobs.
+    // Additive only — every existing profile gets the default browser settings, which keep the
+    // previous behaviour (no time zone or language override, same window size, 100% zoom).
+    version: 3,
+    sql: `
+      ALTER TABLE profiles ADD COLUMN browser_config TEXT NOT NULL DEFAULT '{}';
+
+      -- Latest proxy/IP check per profile. route_key identifies the proxy endpoint the check
+      -- was made for (never credentials), so a check made for an older proxy is shown as stale.
+      CREATE TABLE profile_network_status (
+        profile_id              TEXT PRIMARY KEY,
+        route_key               TEXT NOT NULL,
+        checked_at              TEXT NOT NULL,
+        proxy_status            TEXT NOT NULL,
+        proxy_message           TEXT NOT NULL,
+        response_time_ms        INTEGER,
+        ip                      TEXT,
+        geo_status              TEXT NOT NULL,
+        geo_message             TEXT NOT NULL DEFAULT '',
+        geo_json                TEXT,
+        last_valid_timezone     TEXT,
+        last_valid_timezone_at  TEXT,
+        last_valid_timezone_route TEXT
+      );
+
+      CREATE TABLE backup_history (
+        id            TEXT PRIMARY KEY,
+        profile_id    TEXT,
+        profile_name  TEXT NOT NULL,
+        kind          TEXT NOT NULL,
+        status        TEXT NOT NULL,
+        file_name     TEXT,
+        file_path     TEXT,
+        size_bytes    INTEGER,
+        sha256        TEXT,
+        details       TEXT NOT NULL DEFAULT '',
+        created_at    TEXT NOT NULL
+      );
+      CREATE INDEX idx_backup_history_profile ON backup_history (profile_id, created_at);
+
+      -- Work that must run before a profile's browser session is loaded (full backup or
+      -- in-place restore of a profile that was opened since the app started).
+      CREATE TABLE jobs (
+        id          TEXT PRIMARY KEY,
+        kind        TEXT NOT NULL,
+        profile_id  TEXT NOT NULL,
+        payload     TEXT NOT NULL,
+        status      TEXT NOT NULL,
+        result      TEXT,
+        created_at  TEXT NOT NULL,
+        finished_at TEXT
+      );
+    `
   }
 ]
 
@@ -123,7 +179,8 @@ export class AppDatabase {
    * - A file that is not readable as SQLite is moved aside (kept for inspection) and a new
    *   database is created.
    * - Before upgrading an existing database to a newer schema, a copy of the file is saved
-   *   next to it (`*.pre-v<N>-<timestamp>.bak`).
+   *   next to it (`*.pre-v<N>-<timestamp>.bak`) and verified (same SHA-256, opens as SQLite with
+   *   the old schema version). If the copy can't be verified, the upgrade does not run.
    * - If a migration fails, the error is thrown and the file on disk is left unchanged.
    * - A database created by a newer version of the app is refused rather than modified.
    */
@@ -156,7 +213,7 @@ export class AppDatabase {
     let backupPath: string | undefined
     if (version > 0 && version < SCHEMA_VERSION) {
       backupPath = `${filePath}.pre-v${SCHEMA_VERSION}-${Date.now()}.bak`
-      copyFileSync(filePath, backupPath)
+      makeVerifiedCopy(SQL, filePath, backupPath, version)
     }
     db.migrate()
     return backupPath ? { db, migratedFrom: version, preMigrationBackup: backupPath } : { db }
@@ -233,6 +290,36 @@ export class AppDatabase {
         this.db.run(`PRAGMA user_version = ${migration.version}`)
       })
     }
+  }
+}
+
+function sha256(file: string): string {
+  return createHash('sha256').update(readFileSync(file)).digest('hex')
+}
+
+/** Confirms a pre-migration copy is byte-identical and readable before anything is changed. */
+function makeVerifiedCopy(SQL: SqlJsStatic, original: string, copy: string, version: number): void {
+  let ok = false
+  try {
+    copyFileSync(original, copy)
+    if (sha256(original) === sha256(copy)) {
+      const check = new SQL.Database(readFileSync(copy))
+      try {
+        const result = check.exec('PRAGMA user_version')[0] as { values: unknown[][] } | undefined
+        const row = result?.values[0]?.[0]
+        ok = Number(row) === version
+      } finally {
+        check.close()
+      }
+    }
+  } catch {
+    ok = false
+  }
+  if (!ok) {
+    throw new Error(
+      `Could not make a verified safety copy of the database before upgrading it, so the upgrade was not started. ` +
+        `Check free disk space and permissions for ${dirname(original)}, then start the app again. Your data was not changed.`
+    )
   }
 }
 
