@@ -151,7 +151,8 @@ const VERDICT_ICON: Record<DiagnosticVerdict, string> = {
   fail: '✕',
   warning: '!',
   unknown: '?',
-  info: 'i'
+  info: 'i',
+  'not-tested': '–'
 }
 
 function DiagRow({ label, check, mono = false, testId }: { label: string; check: DiagnosticCheck; mono?: boolean; testId?: string }) {
