@@ -117,7 +117,13 @@ export async function editorSetupChecks(ctx: SmokeContext, check: Check, f: Fixt
     userAgent: string | null
     dnt: string | null
   }
-  check('manual language and Accept-Language reach the page and the server', env.lang === 'fr-FR' && headers.acceptLanguage === 'fr-FR,fr,en', `${env.lang} | ${env.langs} | ${headers.acceptLanguage}`)
+  // Chromium adds its usual q-values to the header; the order of the languages is what was set.
+  const headerLangs = (headers.acceptLanguage ?? '').split(',').map((x) => x.split(';')[0]!.trim()).join(',')
+  check(
+    'manual language and Accept-Language reach the page and the server',
+    env.lang === 'fr-FR' && env.langs === 'fr-FR,fr,en' && headerLangs === 'fr-FR,fr,en',
+    `${env.lang} | ${env.langs} | ${headers.acceptLanguage}`
+  )
   check('custom User-Agent in navigator.userAgent and the request header', env.ua === customUa && headers.userAgent === customUa, env.ua)
   check('manual time zone applied', env.tz === 'Asia/Tokyo', env.tz)
   check('Do Not Track header sent', headers.dnt === '1', String(headers.dnt))
