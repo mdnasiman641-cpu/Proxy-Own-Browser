@@ -2,6 +2,7 @@ import { readFileSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { app, type WebContents } from 'electron'
 import type { DuplicateResult, FullBackupOutcome, ProfileNetworkStatus, RuntimeInfo } from '@shared/types'
+import { locationChecks } from './smokeLocation'
 import {
   httpJson,
   pageHas,
@@ -99,7 +100,9 @@ export async function phase4SetupChecks(ctx: SmokeContext, check: Check, f: Fixt
   // ---- a failing proxy never falls back to a direct connection ----
   const dead = ctx.profiles.create({
     name: 'Smoke dead proxy',
-    proxy: { enabled: true, protocol: 'http', host: '127.0.0.1', port: f.closedPort, bypassRules: '<-loopback>' }
+    proxy: { enabled: true, protocol: 'http', host: '127.0.0.1', port: f.closedPort, bypassRules: '<-loopback>' },
+    // Opened on purpose with a dead proxy, so it must not wait for the automatic time zone.
+    browser: { timezoneMode: 'off' }
   })
   await ctx.windows.open(dead.id, { initialUrl: `${f.echoBase}/page?n=777` })
   const deadEntry = ctx.windows.windowFor(dead.id)!
@@ -155,7 +158,7 @@ export async function phase4SetupChecks(ctx: SmokeContext, check: Check, f: Fixt
   // ---- same exit IP warning ----
   const sibling = ctx.profiles.create({
     name: 'Smoke same exit',
-    proxy: { enabled: true, protocol: 'http', host: '127.0.0.1', port: f.openProxyPort, bypassRules: '<-loopback>' }
+    proxy: { enabled: true, protocol: 'http', host: '127.0.0.1', port: f.sameExitProxyPort, bypassRules: '<-loopback>' }
   })
   const siblingStatus = await viaDashboard<ProfileNetworkStatus>(ctx, `window.pob.checkNetwork(${JSON.stringify(sibling.id)})`)
   check(
@@ -262,6 +265,8 @@ export async function phase4SetupChecks(ctx: SmokeContext, check: Check, f: Fixt
   )
   ctx.profiles.delete(settingsOnly.profile.id)
 
+  await locationChecks(ctx, check, f, proxied.id)
+
   // ---- dashboard pages for the new features render (the UI is in Bangla at this point) ----
   const dash = ctx.getDashboard()!.webContents
   await dash.executeJavaScript(`document.querySelector('[data-nav="profiles"]').click()`)
@@ -276,6 +281,19 @@ export async function phase4SetupChecks(ctx: SmokeContext, check: Check, f: Fixt
   )
   check('profile details page shows network, browser settings and runtime panels', detailsShown, banglaHeading)
   check('new pages are translated (Bangla)', banglaHeading === 'প্রক্সি ও আইপি অবস্থা', banglaHeading)
+  const panelsShown =
+    (await pageHas(dash, '[data-testid="diagnostics-panel"]')) &&
+    (await pageHas(dash, '[data-testid="storage-panel"]')) &&
+    (await pageHas(dash, '[data-testid="backup-facts"]')) &&
+    (await pageHas(dash, '[data-testid="webrtc-setting"]'))
+  await dash.executeJavaScript(`document.querySelector('[data-testid="run-diagnostics"]').click()`)
+  const diagRendered = await pageHas(dash, '[data-testid="diag-dns"][data-verdict]')
+  const diagHeading = await dash.executeJavaScript(`document.querySelector('[data-testid="diagnostics-panel"] h2')?.textContent ?? ''`)
+  check(
+    'details page shows diagnostics (with results), own-vs-shared storage, backup status and the WebRTC setting',
+    panelsShown && diagRendered && diagHeading === 'ডায়াগনস্টিকস',
+    diagHeading
+  )
   await dash.executeJavaScript(`document.querySelector('[data-nav="backup"]').click()`)
   const backupShown = (await pageHas(dash, '[data-testid="backup-folder"]')) && (await pageHas(dash, '[data-testid="backup-files"] table'))
   const folderText = await dash.executeJavaScript(`document.querySelector('[data-testid="backup-folder"] .mono')?.textContent ?? ''`)
@@ -325,6 +343,12 @@ export async function phase4VerifyChecks(ctx: SmokeContext, check: Check, f: Fix
   check('the scheduled backup exists and its checksums verify', verifyB?.ok === true, verifyB?.message)
   const wrong = await ctx.backupCenter.verify(fileA, 'not-the-password')
   check('a wrong backup password is rejected', !wrong.ok && /password is not correct/.test(wrong.message), wrong.message)
+  const bStatus = ctx.backupCenter.backupStatus()
+  check(
+    'each profile shows its own backup status (after the scheduled backup ran at start-up)',
+    bStatus[a.id]?.lastFullAt !== null && bStatus[b.id]?.lastFullAt !== null && bStatus[b.id]?.fullScheduled === false,
+    JSON.stringify({ a: bStatus[a.id], b: bStatus[b.id] })
+  )
 
   // A damaged copy is rejected and the original profile is not touched.
   const damaged = fileA.replace(/\.pobfull$/, '-damaged.pobfull')

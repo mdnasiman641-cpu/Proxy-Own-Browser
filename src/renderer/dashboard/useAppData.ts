@@ -1,12 +1,14 @@
 import { useCallback, useEffect, useState } from 'react'
 import type {
   AppSettings,
+  BrowserTimezoneReport,
   Profile,
   ProfileGroup,
   ProfileInput,
   ProfileRuntimeStatus,
   ProfileTag,
   ProfileNetworkStatus,
+  ProfileBackupStatus,
   ProfileTemplate,
   ProfileUpdate,
   SaveProfileOptions
@@ -33,6 +35,8 @@ export function useAppData() {
   const [statuses, setStatuses] = useState<Record<string, ProfileRuntimeStatus>>({})
   const [settings, setSettings] = useState<AppSettings | null>(null)
   const [network, setNetwork] = useState<Record<string, ProfileNetworkStatus>>({})
+  const [reportedTimezones, setReportedTimezones] = useState<Record<string, BrowserTimezoneReport>>({})
+  const [backups, setBackups] = useState<Record<string, ProfileBackupStatus>>({})
   const [startupNotes, setStartupNotes] = useState<string[]>([])
   const [loading, setLoading] = useState(true)
   const [loadError, setLoadError] = useState<string | null>(null)
@@ -58,9 +62,23 @@ export function useAppData() {
   /** Stored proxy/IP status of every checked profile (no network requests are made here). */
   const refreshNetwork = useCallback(async () => {
     try {
-      setNetwork(await unwrap(window.pob.networkStatuses()))
+      const [stored, reported] = await Promise.all([
+        unwrap(window.pob.networkStatuses()),
+        unwrap(window.pob.reportedTimezones())
+      ])
+      setNetwork(stored)
+      setReportedTimezones(reported)
     } catch {
       /* shown as "not checked" */
+    }
+  }, [])
+
+  /** Per-profile backup status, derived from the stored backup history. */
+  const refreshBackups = useCallback(async () => {
+    try {
+      setBackups(await unwrap(window.pob.backupStatus()))
+    } catch {
+      /* shown as "no backup" */
     }
   }, [])
 
@@ -74,14 +92,14 @@ export function useAppData() {
       setProfiles(list)
       setStatuses(st)
       setSettings(s)
-      await Promise.all([refreshCatalog(), refreshNetwork()])
+      await Promise.all([refreshCatalog(), refreshNetwork(), refreshBackups()])
       setLoadError(null)
     } catch (error) {
       setLoadError(errorMessage(error))
     } finally {
       setLoading(false)
     }
-  }, [refreshCatalog, refreshNetwork])
+  }, [refreshCatalog, refreshNetwork, refreshBackups])
 
   useEffect(() => {
     void refresh()
@@ -165,7 +183,10 @@ export function useAppData() {
     runningCount,
     settings,
     network,
+    reportedTimezones,
     refreshNetwork,
+    backups,
+    refreshBackups,
     startupNotes,
     dismissStartupNotes: () => setStartupNotes([]),
     loading,

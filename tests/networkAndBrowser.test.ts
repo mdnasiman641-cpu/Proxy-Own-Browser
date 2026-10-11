@@ -9,7 +9,7 @@ import {
 } from '../src/shared/browserConfig'
 import { proxyEndpointKey } from '../src/shared/proxy'
 import { parseGeoResponse, runGeoLookup } from '../src/main/services/geoLookup'
-import { NetworkService, TIMEZONE_CACHE_MS, type RouteChecker } from '../src/main/services/networkService'
+import { GEO_CACHE_MS, LAUNCH_RECHECK_MS, NetworkService, TIMEZONE_CACHE_MS, type RouteChecker } from '../src/main/services/networkService'
 import { FetchError } from '../src/main/services/proxyTest'
 import { assessPressure } from '../src/main/services/resourcePressure'
 import type { GeoLookupResult } from '../src/main/services/geoLookup'
@@ -42,17 +42,20 @@ const proxyFail: ProxyTestResult = { ...proxyOk('x'), ok: false, status: 'proxy-
 const geoOk = (ip: string, timezone: string | null): GeoLookupResult => ({
   status: 'success',
   message: 'Located',
-  data: { ip, country: 'X', countryCode: 'XX', region: null, city: null, latitude: null, longitude: null, timezone, provider: 'test' }
+  data: { ip, country: 'X', countryCode: 'XX', region: null, city: null, latitude: null, longitude: null, timezone, isp: null, org: null, asn: null, provider: 'test' }
 })
 
 /** A checker whose answers the test controls; records which targets it was asked about. */
 function fakeChecker() {
+  /** `geo` records whether a location lookup was actually made for that check. */
   const calls: { key: string; host: string | null; geo: boolean }[] = []
   let next: { proxy: ProxyTestResult; geo: GeoLookupResult | null } = { proxy: proxyOk('203.0.113.7'), geo: geoOk('203.0.113.7', 'America/New_York') }
   const checker: RouteChecker = {
     async check(key, target, options) {
-      calls.push({ key, host: target.proxy?.host ?? null, geo: options.geo })
-      return { proxy: next.proxy, geo: options.geo && next.proxy.ok ? next.geo : null }
+      const ip = next.proxy.ip
+      const wantGeo = typeof options.geo === 'function' ? next.proxy.ok && ip !== null && options.geo(ip) : options.geo
+      calls.push({ key, host: target.proxy?.host ?? null, geo: wantGeo && next.proxy.ok })
+      return { proxy: next.proxy, geo: wantGeo && next.proxy.ok ? next.geo : null }
     }
   }
   return { checker, calls, answer: (a: typeof next) => (next = a) }
@@ -110,6 +113,19 @@ describe('browser settings', () => {
     expect(() => app.service.update(a.id, { browser: { timezoneManual: 'Nowhere/City' } })).toThrow(/Unknown time zone/)
     expect(() => app.service.update(a.id, { browser: { windowWidth: 10 } })).toThrow(/at least/)
     expect(() => app.service.update(a.id, { browser: { cpuCores: 64 } as never })).toThrow()
+  })
+
+  it('keeps the WebRTC setting per profile, defaulting to Chromium’s own behaviour', async () => {
+    expect(DEFAULT_BROWSER_CONFIG.webrtcPolicy).toBe('default')
+    expect(parseStoredBrowserConfig({ timezoneMode: 'off' }).webrtcPolicy).toBe('default')
+    expect(parseStoredBrowserConfig({ webrtcPolicy: 'bogus' }).webrtcPolicy).toBe('default')
+    expect(parseStoredBrowserConfig({ webrtcPolicy: 'disable_non_proxied_udp' }).webrtcPolicy).toBe('disable_non_proxied_udp')
+    const { service } = await createService()
+    const a = service.create({ name: 'A', browser: { webrtcPolicy: 'disable_non_proxied_udp' } })
+    const b = service.create({ name: 'B' })
+    expect(service.get(a.id).browser.webrtcPolicy).toBe('disable_non_proxied_udp')
+    expect(service.get(b.id).browser.webrtcPolicy).toBe('default')
+    expect(() => service.update(b.id, { browser: { webrtcPolicy: 'leak-everything' as never } })).toThrow()
   })
 
   it('builds the plain Chrome User-Agent from the real one without changing versions', () => {
@@ -213,6 +229,28 @@ describe('proxy status and automatic time zone', () => {
     expect(app.network.status(a.id)!.sameExitIpAs).toEqual([])
   })
 
+  it('remembers the last successful test across failures and forgets it on a proxy change', async () => {
+    let clock = new Date('2026-10-01T00:00:00.000Z')
+    const app = await networkApp(() => clock)
+    const a = app.service.create({ name: 'A', proxy: PROXY })
+    expect(app.network.status(a.id)).toBeNull()
+    await app.network.check(a.id)
+    expect(app.network.status(a.id)).toMatchObject({ lastSuccessAt: '2026-10-01T00:00:00.000Z', lastSuccessIp: '203.0.113.7' })
+
+    clock = new Date('2026-10-02T00:00:00.000Z')
+    app.fake.answer({ proxy: proxyFail, geo: null })
+    const failed = await app.network.check(a.id, { force: true })
+    expect(failed.proxy.ok).toBe(false)
+    expect(failed).toMatchObject({ checkedAt: '2026-10-02T00:00:00.000Z', lastSuccessAt: '2026-10-01T00:00:00.000Z', lastSuccessIp: '203.0.113.7' })
+
+    // A different proxy has no successful test yet.
+    app.service.update(a.id, { proxy: { ...PROXY, host: '10.0.0.2' } })
+    expect(app.network.status(a.id)!.lastSuccessAt).toBeNull()
+    const other = await app.network.check(a.id, { force: true })
+    expect(other.lastSuccessAt).toBeNull()
+    expect(other.lastSuccessIp).toBeNull()
+  })
+
   it('notes when the exit IP changed between the IP check and the location lookup', async () => {
     const app = await networkApp()
     const a = app.service.create({ name: 'A', proxy: PROXY })
@@ -259,6 +297,105 @@ describe('proxy status and automatic time zone', () => {
     await expect(app.network.planLaunch(auto.id)).rejects.toThrow(/turned off/)
     const status = await app.network.check(auto.id)
     expect(status.geo.status).toBe('skipped')
+  })
+})
+
+describe('IP location caching, rotation and isolation', () => {
+  it('reads ISP, organization and ASN when the service reports them', () => {
+    const data = parseGeoResponse(
+      JSON.stringify({ ip: '203.0.113.7', success: true, country: 'US', connection: { asn: 13335, org: 'Example Org', isp: 'Example ISP' }, timezone: { id: 'America/Chicago' } }),
+      'ipwhois',
+      'ipwho.is'
+    ).data!
+    expect(data).toMatchObject({ isp: 'Example ISP', org: 'Example Org', asn: 'AS13335', timezone: 'America/Chicago' })
+    const ipapi = parseGeoResponse(JSON.stringify({ ip: '198.51.100.4', org: 'Some Telecom', asn: 'AS64500' }), 'ipapi', 'ipapi.co').data!
+    expect(ipapi).toMatchObject({ isp: null, org: 'Some Telecom', asn: 'AS64500', timezone: null, city: null })
+  })
+
+  it('reuses the location for the same exit IP, looks it up again for a new IP or on manual refresh', async () => {
+    let clock = new Date('2026-10-11T00:00:00Z')
+    const app = await networkApp(() => clock)
+    const a = app.service.create({ name: 'A', proxy: PROXY })
+    await app.network.check(a.id)
+    expect(app.fake.calls.at(-1)!.geo).toBe(true)
+
+    clock = new Date(clock.getTime() + 60_000)
+    const cached = await app.network.check(a.id)
+    expect(app.fake.calls.at(-1)!.geo).toBe(false)
+    expect(cached).toMatchObject({ geoReused: true, ip: '203.0.113.7', geo: { status: 'success', data: { timezone: 'America/New_York' } } })
+    expect(cached.geoCheckedAt).toBe('2026-10-11T00:00:00.000Z')
+
+    const forced = await app.network.check(a.id, { force: true })
+    expect(app.fake.calls.at(-1)!.geo).toBe(true)
+    expect(forced.geoReused).toBe(false)
+
+    // The proxy rotates to a new exit IP: noticed, remembered, and located again.
+    app.fake.answer({ proxy: proxyOk('198.51.100.9'), geo: geoOk('198.51.100.9', 'America/Chicago') })
+    const rotated = await app.network.check(a.id)
+    expect(app.fake.calls.at(-1)!.geo).toBe(true)
+    expect(rotated).toMatchObject({ ip: '198.51.100.9', previousIp: '203.0.113.7', geo: { data: { timezone: 'America/Chicago' } }, lastValidTimezone: 'America/Chicago' })
+    expect(rotated.ipChangedAt).toBe(clock.toISOString())
+
+    // After the cache period the same IP is looked up again.
+    clock = new Date(clock.getTime() + GEO_CACHE_MS + 1000)
+    await app.network.check(a.id)
+    expect(app.fake.calls.at(-1)!.geo).toBe(true)
+  })
+
+  it('rechecks the exit IP when an automatic-time-zone profile opens after a while', async () => {
+    let clock = new Date('2026-10-11T00:00:00Z')
+    const app = await networkApp(() => clock)
+    const a = app.service.create({ name: 'A', proxy: PROXY })
+    expect(a.browser.timezoneMode).toBe('auto')
+    await app.network.planLaunch(a.id)
+    const calls = app.fake.calls.length
+    await app.network.planLaunch(a.id)
+    expect(app.fake.calls.length).toBe(calls) // fresh: no request
+    clock = new Date(clock.getTime() + LAUNCH_RECHECK_MS + 1000)
+    app.fake.answer({ proxy: proxyOk('198.51.100.9'), geo: geoOk('198.51.100.9', 'Europe/Berlin') })
+    expect((await app.network.planLaunch(a.id)).timezone).toBe('Europe/Berlin')
+  })
+
+  it('a check stores only that profile\'s result and never copies it to another profile', async () => {
+    const app = await networkApp()
+    const a = app.service.create({ name: 'A', proxy: PROXY })
+    const b = app.service.create({ name: 'B', proxy: { ...PROXY, host: '10.0.0.2' } })
+    app.fake.answer({ proxy: proxyOk('198.51.100.9'), geo: geoOk('198.51.100.9', 'Europe/Berlin') })
+    await app.network.check(b.id)
+    const bBefore = JSON.stringify(app.network.status(b.id))
+    app.fake.answer({ proxy: proxyOk('203.0.113.7'), geo: geoOk('203.0.113.7', 'America/New_York') })
+    await app.network.check(a.id)
+    expect(JSON.stringify(app.network.status(b.id))).toBe(bBefore)
+    expect(app.network.status(a.id)!.geo.data!.timezone).toBe('America/New_York')
+    expect(app.network.status(b.id)!.geo.data!.timezone).toBe('Europe/Berlin')
+    expect(app.fake.calls.map((c) => c.host)).toEqual(['10.0.0.2', '10.0.0.1'])
+  })
+
+  it('reports a location-service timeout as a failure and keeps the last valid time zone', async () => {
+    const result = await runGeoLookup({
+      fetcher: () => new Promise(() => {}),
+      timeoutMs: 50
+    })
+    expect(result).toMatchObject({ status: 'failed', data: null })
+    expect(result.message).toMatch(/did not answer in time/)
+
+    const app = await networkApp()
+    const a = app.service.create({ name: 'A', proxy: PROXY })
+    await app.network.check(a.id)
+    app.fake.answer({ proxy: proxyOk('203.0.113.7'), geo: result })
+    const failed = await app.network.check(a.id, { force: true })
+    expect(failed).toMatchObject({ geo: { status: 'failed', data: null }, lastValidTimezone: 'America/New_York', lastValidTimezoneCurrent: true })
+  })
+
+  it('switches to the automatic time zone when a proxy is configured for the first time', async () => {
+    const app = await createApp()
+    const plain = app.service.create({ name: 'Plain' })
+    expect(plain.browser.timezoneMode).toBe('off')
+    expect(app.service.update(plain.id, { proxy: PROXY }).browser.timezoneMode).toBe('auto')
+    const manual = app.service.create({ name: 'Manual', browser: { timezoneMode: 'manual', timezoneManual: 'Asia/Dhaka' } })
+    expect(app.service.update(manual.id, { proxy: PROXY }).browser.timezoneMode).toBe('manual')
+    const explicitOff = app.service.create({ name: 'Off', proxy: PROXY, browser: { timezoneMode: 'off' } })
+    expect(explicitOff.browser.timezoneMode).toBe('off')
   })
 })
 

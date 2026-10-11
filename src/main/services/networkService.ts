@@ -13,17 +13,27 @@ import type { GeoLookupResult } from './geoLookup'
 import type { Logger } from './logger'
 import type { ProfileService, ProxyTestTarget } from './profileService'
 
-/** Performs one proxy check (public IP) and, optionally, the IP location lookup through it. */
+/**
+ * Performs one proxy check (public IP) and, optionally, the IP location lookup through it.
+ * `geo` may be a function: it receives the exit IP and decides whether a lookup is needed.
+ */
 export interface RouteChecker {
   check(
     key: string,
     target: ProxyTestTarget,
-    options: { geo: boolean }
+    options: { geo: boolean | ((ip: string) => boolean) }
   ): Promise<{ proxy: ProxyTestResult; geo: GeoLookupResult | null }>
 }
 
-/** A detected time zone is reused without a new lookup for this long. */
-export const TIMEZONE_CACHE_MS = 12 * 60 * 60 * 1000
+/** A location looked up for an exit IP is reused for that same IP for this long. */
+export const GEO_CACHE_MS = 24 * 60 * 60 * 1000
+/**
+ * When an automatic-time-zone profile opens, the exit IP is checked again if the last check is
+ * older than this (one small request; the location is only looked up again if the IP changed).
+ */
+export const LAUNCH_RECHECK_MS = 30 * 60 * 1000
+/** @deprecated kept for older callers; see GEO_CACHE_MS. */
+export const TIMEZONE_CACHE_MS = GEO_CACHE_MS
 
 /** What a profile window applies to its pages. */
 export interface LaunchPlan {
@@ -48,13 +58,34 @@ interface StatusRow {
   last_valid_timezone: string | null
   last_valid_timezone_at: string | null
   last_valid_timezone_route: string | null
+  geo_checked_at: string | null
+  geo_reused: number | null
+  previous_ip: string | null
+  ip_changed_at: string | null
+  last_success_at: string | null
+  last_success_ip: string | null
 }
 
 function parseGeo(json: string | null): IpGeolocation | null {
   if (!json) return null
   try {
-    const value = JSON.parse(json) as IpGeolocation
-    return value && typeof value.ip === 'string' ? value : null
+    const value = JSON.parse(json) as Partial<IpGeolocation>
+    if (!value || typeof value.ip !== 'string') return null
+    // Results stored by older versions have no ISP/organization fields: shown as unknown.
+    return {
+      ip: value.ip,
+      country: value.country ?? null,
+      countryCode: value.countryCode ?? null,
+      region: value.region ?? null,
+      city: value.city ?? null,
+      latitude: value.latitude ?? null,
+      longitude: value.longitude ?? null,
+      timezone: value.timezone ?? null,
+      isp: value.isp ?? null,
+      org: value.org ?? null,
+      asn: value.asn ?? null,
+      provider: value.provider ?? 'unknown'
+    }
   } catch {
     return null
   }
@@ -136,30 +167,55 @@ export class NetworkService {
         lastValidTimezone: row.last_valid_timezone,
         lastValidTimezoneAt: row.last_valid_timezone_at,
         lastValidTimezoneCurrent: row.last_valid_timezone !== null && row.last_valid_timezone_route === key,
-        sameExitIpAs: same.map((id) => ({ id, name: names.get(id) ?? id }))
+        sameExitIpAs: same.map((id) => ({ id, name: names.get(id) ?? id })),
+        geoCheckedAt: row.geo_checked_at ?? null,
+        geoReused: Number(row.geo_reused ?? 0) === 1,
+        previousIp: row.previous_ip ?? null,
+        ipChangedAt: row.ip_changed_at ?? null,
+        lastSuccessAt: row.route_key === key ? (row.last_success_at ?? null) : null,
+        lastSuccessIp: row.route_key === key ? (row.last_success_ip ?? null) : null
       }
     }
     return result
   }
 
   /**
-   * Checks the profile's saved proxy now: connectivity + public IP, then (if enabled) the IP's
-   * location and time zone through the same proxy. Concurrent checks of one profile are merged.
+   * Checks the profile's saved proxy now: connectivity + public exit IP, then (if enabled) the
+   * IP's location and time zone through the same proxy. A location stored for the same exit IP
+   * within GEO_CACHE_MS is reused instead of asking the service again, unless `force` is set
+   * (the user's "Refresh IP & location"). Concurrent checks of one profile are merged.
+   * Only this profile's stored result is ever written.
    */
-  check(profileId: string): Promise<ProfileNetworkStatus> {
+  check(profileId: string, options: { force?: boolean } = {}): Promise<ProfileNetworkStatus> {
     const running = this.inFlight.get(profileId)
     if (running) return running
-    const promise = this.runCheck(profileId).finally(() => this.inFlight.delete(profileId))
+    const promise = this.runCheck(profileId, options.force === true).finally(() => this.inFlight.delete(profileId))
     this.inFlight.set(profileId, promise)
     return promise
   }
 
-  private async runCheck(profileId: string): Promise<ProfileNetworkStatus> {
+  private async runCheck(profileId: string, force: boolean): Promise<ProfileNetworkStatus> {
     const profile = this.deps.profiles.get(profileId)
     const routeKey = proxyEndpointKey(profile.proxy)
     const target = this.deps.profiles.resolveProxyTestTarget(profileId)
+    const previous = this.deps.db.get<StatusRow>('SELECT * FROM profile_network_status WHERE profile_id = ?', [
+      profileId
+    ])
+    const startedAt = this.now().getTime()
+    const reusable = (ip: string | null): boolean =>
+      !force &&
+      ip !== null &&
+      previous !== undefined &&
+      previous.route_key === routeKey &&
+      previous.ip === ip &&
+      previous.geo_status === 'success' &&
+      previous.geo_json !== null &&
+      previous.geo_checked_at !== null &&
+      startedAt - Date.parse(previous.geo_checked_at) < GEO_CACHE_MS &&
+      parseGeo(previous.geo_json)?.ip === ip
+    const geoEnabled = this.deps.geoEnabled()
     const { proxy, geo } = await this.deps.checker.check(`network-${profileId}`, target, {
-      geo: this.deps.geoEnabled()
+      geo: geoEnabled ? (ip: string) => !reusable(ip) : false
     })
 
     // The profile may have been deleted or its proxy changed while the check ran.
@@ -169,14 +225,26 @@ export class NetworkService {
       throw new ValidationError('The proxy was changed while it was being checked. Check again.')
     }
 
+    const checkedAt = this.now().toISOString()
     let geoStatus: GeoStatus = 'skipped'
     let geoMessage = ''
     let geoData: IpGeolocation | null = null
+    let geoReused = false
+    let geoCheckedAt: string | null = previous?.route_key === routeKey ? (previous.geo_checked_at ?? null) : null
     if (!proxy.ok) {
-      geoMessage = 'Not looked up because the proxy check failed.'
-    } else if (!geo) {
+      geoMessage = 'Not looked up because the proxy check failed. Nothing is shown from this PC’s own connection.'
+    } else if (!geoEnabled) {
       geoMessage = 'IP location lookup is turned off in Application Settings.'
+    } else if (reusable(proxy.ip)) {
+      geoStatus = 'success'
+      geoData = parseGeo(previous!.geo_json)
+      geoReused = true
+      geoMessage = `The exit IP is unchanged, so the location found at ${previous!.geo_checked_at} was reused.`
+    } else if (!geo) {
+      geoStatus = 'failed'
+      geoMessage = 'IP location lookup did not run.'
     } else {
+      if (geo.status === 'success') geoCheckedAt = checkedAt
       geoStatus = geo.status
       geoMessage = geo.message
       geoData = geo.data
@@ -190,11 +258,23 @@ export class NetworkService {
       }
     }
 
-    const checkedAt = this.now().toISOString()
-    const previous = this.deps.db.get<StatusRow>(
-      'SELECT * FROM profile_network_status WHERE profile_id = ?',
-      [profileId]
-    )
+    // Rotating proxies: remember the previous exit IP of the same proxy when it changes.
+    let previousIp: string | null = null
+    let ipChangedAt: string | null = null
+    if (previous && previous.route_key === routeKey) {
+      if (proxy.ip && previous.ip && previous.ip !== proxy.ip) {
+        previousIp = previous.ip
+        ipChangedAt = checkedAt
+      } else {
+        previousIp = previous.previous_ip ?? null
+        ipChangedAt = previous.ip_changed_at ?? null
+      }
+    }
+    // Last successful test of this proxy (kept when a later test fails; reset on a proxy change).
+    const sameRoute = previous?.route_key === routeKey
+    const lastSuccess = proxy.ok
+      ? { at: checkedAt, ip: proxy.ip }
+      : { at: sameRoute ? (previous?.last_success_at ?? null) : null, ip: sameRoute ? (previous?.last_success_ip ?? null) : null }
     const tz = geoData?.timezone ?? null
     const lastValid = tz
       ? { tz, at: checkedAt, route: routeKey }
@@ -207,14 +287,16 @@ export class NetworkService {
     this.deps.db.run(
       `INSERT INTO profile_network_status (profile_id, route_key, checked_at, proxy_status, proxy_message,
          response_time_ms, ip, geo_status, geo_message, geo_json, last_valid_timezone, last_valid_timezone_at,
-         last_valid_timezone_route)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+         last_valid_timezone_route, geo_checked_at, geo_reused, previous_ip, ip_changed_at, last_success_at, last_success_ip)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
        ON CONFLICT(profile_id) DO UPDATE SET
          route_key = excluded.route_key, checked_at = excluded.checked_at, proxy_status = excluded.proxy_status,
          proxy_message = excluded.proxy_message, response_time_ms = excluded.response_time_ms, ip = excluded.ip,
          geo_status = excluded.geo_status, geo_message = excluded.geo_message, geo_json = excluded.geo_json,
          last_valid_timezone = excluded.last_valid_timezone, last_valid_timezone_at = excluded.last_valid_timezone_at,
-         last_valid_timezone_route = excluded.last_valid_timezone_route`,
+         last_valid_timezone_route = excluded.last_valid_timezone_route, geo_checked_at = excluded.geo_checked_at,
+         geo_reused = excluded.geo_reused, previous_ip = excluded.previous_ip, ip_changed_at = excluded.ip_changed_at,
+         last_success_at = excluded.last_success_at, last_success_ip = excluded.last_success_ip`,
       [
         profileId,
         routeKey,
@@ -228,11 +310,19 @@ export class NetworkService {
         geoData ? JSON.stringify(geoData) : null,
         lastValid.tz,
         lastValid.at,
-        lastValid.route
+        lastValid.route,
+        geoCheckedAt,
+        geoReused ? 1 : 0,
+        previousIp,
+        ipChangedAt,
+        lastSuccess.at,
+        lastSuccess.ip
       ]
     )
     // Status only — no IP address, location or proxy host in the log.
-    this.deps.logger.info(`Network check for profile ${profileId}: proxy ${proxy.status}, location ${geoStatus}`)
+    this.deps.logger.info(
+      `Network check for profile ${profileId}: proxy ${proxy.status}, location ${geoStatus}${geoReused ? ' (reused)' : ''}${ipChangedAt === checkedAt ? ', exit IP changed' : ''}`
+    )
     return this.status(profileId)!
   }
 
@@ -258,10 +348,14 @@ export class NetworkService {
     }
 
     let status = this.status(profileId)
+    const now = this.now().getTime()
     const fresh =
-      status?.lastValidTimezoneCurrent &&
+      status?.current &&
+      status.proxy.ok &&
+      status.lastValidTimezoneCurrent &&
       status.lastValidTimezoneAt &&
-      this.now().getTime() - Date.parse(status.lastValidTimezoneAt) < TIMEZONE_CACHE_MS
+      now - Date.parse(status.checkedAt) < LAUNCH_RECHECK_MS &&
+      now - Date.parse(status.lastValidTimezoneAt) < GEO_CACHE_MS
     if (fresh) return { ...plan, timezone: status!.lastValidTimezone, timezoneSource: 'auto' }
 
     let failure: string | null = null

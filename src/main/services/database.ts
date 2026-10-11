@@ -16,6 +16,8 @@ export type Row = Record<string, SqlValue>
 export interface Migration {
   version: number
   sql: string
+  /** Data changes that need code (runs in the same transaction, after `sql`). */
+  run?: (db: Database) => void
 }
 
 /** Ordered schema migrations. Never edit a released migration — add a new one. */
@@ -145,6 +147,48 @@ export const MIGRATIONS: readonly Migration[] = [
         created_at  TEXT NOT NULL,
         finished_at TEXT
       );
+    `
+  },
+  {
+    // Proxy location & automatic time zone: when the location was last looked up (results are
+    // reused for the same exit IP), and the previous IP to show rotating proxies. Profiles that
+    // use a proxy and have no manual time zone switch to the automatic, proxy-based time zone.
+    version: 4,
+    sql: `
+      ALTER TABLE profile_network_status ADD COLUMN geo_checked_at TEXT;
+      ALTER TABLE profile_network_status ADD COLUMN previous_ip TEXT;
+      ALTER TABLE profile_network_status ADD COLUMN ip_changed_at TEXT;
+      ALTER TABLE profile_network_status ADD COLUMN geo_reused INTEGER NOT NULL DEFAULT 0;
+      UPDATE profile_network_status SET geo_checked_at = checked_at WHERE geo_status = 'success';
+    `,
+    run: (db) => {
+      const rows = db.exec('SELECT id, browser_config FROM profiles WHERE proxy_host IS NOT NULL')[0] as
+        | { values: unknown[][] }
+        | undefined
+      for (const [id, raw] of (rows?.values ?? []) as [string, string][]) {
+        let config: Record<string, unknown> = {}
+        try {
+          const parsed = JSON.parse(raw) as unknown
+          if (parsed && typeof parsed === 'object') config = parsed as Record<string, unknown>
+        } catch {
+          config = {}
+        }
+        if (config.timezoneMode === 'manual' && typeof config.timezoneManual === 'string') continue
+        config.timezoneMode = 'auto'
+        db.run('UPDATE profiles SET browser_config = ? WHERE id = ?', [JSON.stringify(config), id])
+      }
+    }
+  },
+  {
+    // Last successful proxy test per profile, and which profiles a multi-profile backup covered
+    // (so each profile can show its own backup status).
+    version: 5,
+    sql: `
+      ALTER TABLE profile_network_status ADD COLUMN last_success_at TEXT;
+      ALTER TABLE profile_network_status ADD COLUMN last_success_ip TEXT;
+      UPDATE profile_network_status SET last_success_at = checked_at, last_success_ip = ip
+        WHERE proxy_status = 'success';
+      ALTER TABLE backup_history ADD COLUMN profile_ids TEXT;
     `
   }
 ]
@@ -287,6 +331,7 @@ export class AppDatabase {
       if (migration.version <= current) continue
       this.transaction(() => {
         this.db.exec(migration.sql)
+        migration.run?.(this.db)
         this.db.run(`PRAGMA user_version = ${migration.version}`)
       })
     }

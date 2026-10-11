@@ -24,6 +24,8 @@ import type {
   TemplateInput,
   BackupFileInfo,
   BackupHistoryEntry,
+  ProfileBackupStatus,
+  BrowserTimezoneReport,
   BackupVerifyResult,
   DuplicateRequest,
   DuplicateResult,
@@ -37,6 +39,7 @@ import type {
   RuntimeInfo,
   SaveProfileOptions
 } from './types'
+import type { ProfileDiagnostics } from './diagnostics'
 
 /** Invoke channels callable from the dashboard window. */
 export const DashboardChannels = {
@@ -80,8 +83,10 @@ export const DashboardChannels = {
   proxyConflicts: 'proxy:conflicts',
   duplicateProfile: 'profiles:duplicate',
   checkNetwork: 'network:check',
+  runDiagnostics: 'network:diagnostics',
   networkStatuses: 'network:statuses',
   runtimeInfo: 'app:runtime-info',
+  reportedTimezones: 'network:reported-timezones',
   chooseBackupFolder: 'backups:choose-folder',
   openBackupFolder: 'backups:open-folder',
   backupMetadata: 'backups:metadata',
@@ -91,6 +96,7 @@ export const DashboardChannels = {
   verifyBackup: 'backups:verify',
   restoreBackup: 'backups:restore',
   backupHistory: 'backups:history',
+  backupStatus: 'backups:status',
   pendingJobs: 'jobs:pending',
   cancelJob: 'jobs:cancel',
   startupNotes: 'jobs:startup-notes',
@@ -187,7 +193,14 @@ export interface DashboardApi {
   /** Proxy check + public IP + IP location through the profile's saved proxy (stored). */
   checkNetwork(id: string): Promise<IpcResult<ProfileNetworkStatus>>
   networkStatuses(): Promise<IpcResult<Record<string, ProfileNetworkStatus>>>
+  /**
+   * Proxy, DNS, page-reported values and WebRTC tests for one profile. The STUN test contacts a
+   * public STUN server and only runs when `stun` is true (the user asked for it).
+   */
+  runDiagnostics(id: string, options: { stun: boolean }): Promise<IpcResult<ProfileDiagnostics>>
   runtimeInfo(): Promise<IpcResult<RuntimeInfo>>
+  /** Time zones reported by the pages of open profile windows (read inside each window). */
+  reportedTimezones(): Promise<IpcResult<Record<string, BrowserTimezoneReport>>>
 
   chooseBackupFolder(): Promise<IpcResult<AppSettings | null>>
   openBackupFolder(): Promise<IpcResult<void>>
@@ -199,6 +212,7 @@ export interface DashboardApi {
   verifyBackup(path: string, password?: string): Promise<IpcResult<BackupVerifyResult>>
   restoreBackup(request: RestoreRequest): Promise<IpcResult<RestoreOutcome>>
   backupHistory(profileId?: string): Promise<IpcResult<BackupHistoryEntry[]>>
+  backupStatus(): Promise<IpcResult<Record<string, ProfileBackupStatus>>>
   pendingJobs(): Promise<IpcResult<PendingJob[]>>
   cancelJob(id: string): Promise<IpcResult<void>>
   /** Results of tasks that ran when the app started (scheduled backups/restores). */

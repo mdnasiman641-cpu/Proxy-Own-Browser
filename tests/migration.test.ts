@@ -39,8 +39,8 @@ describe('database migrations', () => {
     await writeV1Database(file)
 
     const { db, migratedFrom, preMigrationBackup } = AppDatabase.open(await loadSqlJs(), file)
-    expect(SCHEMA_VERSION).toBe(3)
-    expect(db.schemaVersion).toBe(3)
+    expect(SCHEMA_VERSION).toBe(5)
+    expect(db.schemaVersion).toBe(5)
     expect(migratedFrom).toBe(1)
     db.close()
 
@@ -53,8 +53,9 @@ describe('database migrations', () => {
     expect(service.getProxyCredentials(shop.id)?.password).toBe('pw')
     expect(shop.groupId).toBeNull()
     expect(shop.tags).toEqual([])
-    // Existing profiles keep the previous browser behaviour: no time zone or language override.
-    expect(shop.browser).toMatchObject({ timezoneMode: 'off', language: null, zoomPercent: 100, userAgent: 'default' })
+    // A profile with a proxy gets the automatic, proxy-based time zone; everything else is unchanged.
+    expect(shop.browser).toMatchObject({ timezoneMode: 'auto', language: null, zoomPercent: 100, userAgent: 'default' })
+    expect(profiles.find((p) => p.name === 'Backup')!.browser.timezoneMode).toBe('off')
     expect(profiles.find((p) => p.name === 'Backup')!.lastOpenedAt).toBe('2026-01-04T00:00:00.000Z')
 
     // New features work on the upgraded data.
@@ -62,7 +63,7 @@ describe('database migrations', () => {
     expect(service.update(shop.id, { groupId: group.id, tags: ['fb'] })).toMatchObject({ groupId: group.id, tags: ['fb'] })
 
     // A copy of the pre-upgrade file is kept and is still a valid v1 database.
-    expect(preMigrationBackup).toMatch(/profiles\.sqlite\.pre-v3-\d+\.bak$/)
+    expect(preMigrationBackup).toMatch(/profiles\.sqlite\.pre-v5-\d+\.bak$/)
     const SQL = await loadSqlJs()
     const old = new SQL.Database(readFileSync(preMigrationBackup!))
     expect((old.exec('PRAGMA user_version')[0] as { values: unknown[][] }).values[0]![0]).toBe(1)
@@ -86,7 +87,7 @@ describe('database migrations', () => {
 
     const { db, migratedFrom, preMigrationBackup } = AppDatabase.open(SQL, file)
     expect(migratedFrom).toBe(2)
-    expect(db.schemaVersion).toBe(3)
+    expect(db.schemaVersion).toBe(SCHEMA_VERSION)
     expect(existsSync(preMigrationBackup!)).toBe(true)
     db.close()
 
@@ -96,6 +97,43 @@ describe('database migrations', () => {
     expect(shop.tags).toEqual(['fb'])
     expect(shop.partition).toBe('persist:profile-11111111-1111-4111-8111-111111111111')
     expect(service.update(shop.id, { browser: { timezoneMode: 'manual', timezoneManual: 'Asia/Dhaka' } }).browser.timezoneManual).toBe('Asia/Dhaka')
+  })
+
+  it('upgrades a v3 database: proxied profiles switch to automatic time zone unless set manually', async () => {
+    const file = join(dir.path, 'profiles.sqlite')
+    await writeV1Database(file)
+    const SQL = await loadSqlJs()
+    const raw = new SQL.Database(readFileSync(file))
+    raw.exec(MIGRATIONS[1]!.sql)
+    raw.exec(MIGRATIONS[2]!.sql)
+    raw.run('PRAGMA user_version = 3')
+    const id1 = '11111111-1111-4111-8111-111111111111'
+    const id2 = '22222222-2222-4222-8222-222222222222'
+    raw.run(`UPDATE profiles SET browser_config = ? WHERE id = ?`, [JSON.stringify({ timezoneMode: 'manual', timezoneManual: 'Asia/Dhaka', zoomPercent: 125 }), id1])
+    raw.run(
+      `INSERT INTO profile_network_status (profile_id, route_key, checked_at, proxy_status, proxy_message, ip, geo_status, geo_json)
+       VALUES (?, '10.0.0.1:8080|bob', '2026-10-01T00:00:00.000Z', 'success', 'ok', '203.0.113.7', 'success', ?)`,
+      [id1, JSON.stringify({ ip: '203.0.113.7', country: 'X', countryCode: null, region: null, city: null, latitude: null, longitude: null, timezone: 'Asia/Dhaka', provider: 'ipwho.is' })]
+    )
+    // A third profile with a proxy and the default ("this PC") time zone.
+    raw.run(`INSERT INTO profiles (id, name, name_key, notes, color, start_url, partition, proxy_protocol, proxy_host, proxy_port, proxy_bypass, created_at, updated_at, browser_config)
+      VALUES ('33333333-3333-4333-8333-333333333333', 'Proxied', 'proxied', '', '#000000', NULL, 'persist:profile-33333333-3333-4333-8333-333333333333', 'http', '10.0.0.3', 3128, '', 'x', 'x', '{"timezoneMode":"off","language":"bn-BD"}')`)
+    writeFileSync(file, raw.export())
+    raw.close()
+
+    const { db, migratedFrom } = AppDatabase.open(SQL, file)
+    expect(migratedFrom).toBe(3)
+    expect(db.get<{ geo_checked_at: string }>('SELECT geo_checked_at FROM profile_network_status')!.geo_checked_at).toBe('2026-10-01T00:00:00.000Z')
+    // v5: the earlier successful test is kept as the last successful one.
+    expect(db.get<{ last_success_at: string; last_success_ip: string }>('SELECT last_success_at, last_success_ip FROM profile_network_status')).toEqual({
+      last_success_at: '2026-10-01T00:00:00.000Z',
+      last_success_ip: '203.0.113.7'
+    })
+    db.close()
+    const { service } = await createService({ filePath: file })
+    expect(service.get(id1).browser).toMatchObject({ timezoneMode: 'manual', timezoneManual: 'Asia/Dhaka', zoomPercent: 125 })
+    expect(service.get('33333333-3333-4333-8333-333333333333').browser).toMatchObject({ timezoneMode: 'auto', language: 'bn-BD' })
+    expect(service.get(id2).browser.timezoneMode).toBe('off') // no proxy: unchanged
   })
 
   it('does not upgrade when the safety copy cannot be verified', async () => {

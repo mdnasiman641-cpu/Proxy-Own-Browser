@@ -20,9 +20,12 @@ import type {
   ProfileInput,
   ProfileUpdate,
   ProxyInput,
+  ProxyTestResult,
   RuntimeInfo,
   TemplateInput
 } from '@shared/types'
+import { DEFAULT_STUN_SERVER } from '@shared/diagnostics'
+import { RUNNING_PROXY_CHANGE_MESSAGE, proxyInputChanges } from '@shared/proxy'
 import { z } from 'zod'
 import {
   ValidationError,
@@ -44,12 +47,15 @@ import {
   duplicateRequestSchema,
   fullBackupRequestSchema,
   restoreRequestSchema,
-  saveProfileOptionsSchema
+  saveProfileOptionsSchema,
+  profileUpdateSchema
 } from '@shared/validation'
 import type { BackupCenter } from '../services/backupCenter'
+import { buildDiagnostics } from '../services/diagnostics'
 import { BACKUP_FORMAT, MAX_BACKUP_BYTES, parseBackup } from '../services/backupService'
 import { BackupError } from '../services/fullBackupArchive'
 import type { NetworkService } from '../services/networkService'
+import { routeLabel } from '../services/proxyTest'
 import type { BulkCreator } from '../services/bulkCreate'
 import { runBulk, type BulkTarget } from '../services/bulkRunner'
 import type { CatalogService } from '../services/catalogService'
@@ -173,6 +179,13 @@ export function registerIpcHandlers(deps: IpcDeps): void {
     const { allowSharedProxy } = parseOrThrow(saveProfileOptionsSchema, options ?? undefined) ?? {}
     const profile = profiles.create(input as ProfileInput, { allowSharedProxy })
     logger.info(`Created profile ${profile.id}`)
+    if (profile.proxy && profile.browser.timezoneMode === 'auto' && settings.get().ipGeolocation) {
+      // Detect the new proxy's exit IP, location and time zone right away (in the background).
+      void deps.network
+        .check(profile.id)
+        .then(() => deps.notifyNetworkStatus(profile.id))
+        .catch((error) => logger.warn(`Background network check for profile ${profile.id} failed`, error))
+    }
     deps.notifyProfilesChanged()
     return profile
   })
@@ -181,7 +194,16 @@ export function registerIpcHandlers(deps: IpcDeps): void {
     const profileId = parseOrThrow(profileIdSchema, id)
     const saveOptions = parseOrThrow(saveProfileOptionsSchema, options ?? undefined) ?? {}
     const before = profiles.get(profileId)
-    const profile = profiles.update(profileId, update as ProfileUpdate, saveOptions)
+    const typedUpdate = update as ProfileUpdate
+    if (
+      windows.isOpen(profileId) &&
+      !saveOptions.confirmRunningProxyChange &&
+      proxyInputChanges(before.proxy, parseOrThrow(profileUpdateSchema, update).proxy as ProxyInput | undefined)
+    ) {
+      // Never switch an open profile's route without the user's explicit confirmation.
+      throw new ValidationError(RUNNING_PROXY_CHANGE_MESSAGE)
+    }
+    const profile = profiles.update(profileId, typedUpdate, saveOptions)
     logger.info(`Updated profile ${profile.id}`)
     // Only this profile's session and windows are updated.
     deps.sessions.refreshBrowserSettings(profile)
@@ -284,8 +306,24 @@ export function registerIpcHandlers(deps: IpcDeps): void {
     if (error) throw new ValidationError(`Could not open the data folder: ${error}`)
   })
 
-  dashboard(DashboardChannels.testProxy, (id, draft) => {
+  dashboard(DashboardChannels.testProxy, async (id, draft) => {
     const profileId = parseOrThrow(nullableProfileIdSchema, id ?? null)
+    if (profileId && draft === undefined) {
+      // Testing a saved proxy also stores its exit IP, location and time zone for this profile.
+      const status = await deps.network.check(profileId, { force: true })
+      deps.notifyNetworkStatus(profileId)
+      const result: ProxyTestResult = {
+        ok: status.proxy.ok,
+        status: status.proxy.status,
+        message: status.proxy.message,
+        ip: status.ip,
+        responseTimeMs: status.proxy.responseTimeMs,
+        endpoint: null,
+        route: routeLabel(profiles.get(profileId).proxy),
+        testedAt: status.checkedAt
+      }
+      return result
+    }
     const target = profiles.resolveProxyTestTarget(profileId, draft as ProxyInput | undefined)
     const key = `${draft ? 'draft' : 'saved'}-${profileId ?? 'new'}`
     return deps.proxyTester.test(key, target)
@@ -481,9 +519,37 @@ export function registerIpcHandlers(deps: IpcDeps): void {
 
   dashboard(DashboardChannels.checkNetwork, async (id) => {
     const profileId = parseOrThrow(profileIdSchema, id)
-    const status = await deps.network.check(profileId)
+    // The user's "Refresh IP & location": always asks the location service again.
+    const status = await deps.network.check(profileId, { force: true })
     deps.notifyNetworkStatus(profileId)
     return status
+  })
+
+  dashboard(DashboardChannels.reportedTimezones, () => windows.reportedTimezones())
+
+  dashboard(DashboardChannels.runDiagnostics, async (id, options) => {
+    const profileId = parseOrThrow(profileIdSchema, id)
+    const { stun } = parseOrThrow(z.object({ stun: z.boolean() }).strict(), options ?? { stun: false })
+    const profile = deps.profiles.get(profileId)
+    const stunServer = stun ? DEFAULT_STUN_SERVER : null
+    const pageResult = await windows.diagnosePage(profileId, stunServer)
+    const report = buildDiagnostics({
+      profile,
+      network: deps.network.status(profileId),
+      page: pageResult?.page ?? null,
+      pagePartition: pageResult?.pagePartition ?? null,
+      resolvedProxy: pageResult?.resolvedProxy ?? null,
+      expected: pageResult?.expected ?? null,
+      pageProblem: pageResult?.problem ?? null,
+      systemTimezone: Intl.DateTimeFormat().resolvedOptions().timeZone,
+      stunServer,
+      now: new Date()
+    })
+    // Verdicts only: no addresses, cookies or page content are written to the log.
+    logger.info(
+      `Diagnostics for profile ${profileId}${stun ? ' (with STUN test)' : ''}: proxy ${report.proxyConnection.verdict}, route ${report.proxyRoute.verdict}, time zone ${report.timezone.verdict}, WebRTC ${report.webrtcLocal.verdict}${report.webrtcStun ? `/${report.webrtcStun.verdict}` : ''}`
+    )
+    return report
   })
 
   dashboard(DashboardChannels.networkStatuses, () => deps.network.statuses())
@@ -608,6 +674,7 @@ export function registerIpcHandlers(deps: IpcDeps): void {
   dashboard(DashboardChannels.backupHistory, (profileId) =>
     deps.backupCenter.history(profileId === undefined || profileId === null ? undefined : parseOrThrow(profileIdSchema, profileId))
   )
+  dashboard(DashboardChannels.backupStatus, () => deps.backupCenter.backupStatus())
   dashboard(DashboardChannels.pendingJobs, () => deps.backupCenter.pendingJobs())
   dashboard(DashboardChannels.cancelJob, (id) => deps.backupCenter.cancelJob(parseOrThrow(z.uuid(), id)))
   dashboard(DashboardChannels.startupNotes, () => deps.startupNotes)

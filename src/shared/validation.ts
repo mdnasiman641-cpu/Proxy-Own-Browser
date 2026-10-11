@@ -210,7 +210,7 @@ export const profileUpdateSchema = z.object({
 })
 
 export const saveProfileOptionsSchema = z
-  .object({ allowSharedProxy: z.boolean().optional() })
+  .object({ allowSharedProxy: z.boolean().optional(), confirmRunningProxyChange: z.boolean().optional() })
   .strict()
   .optional()
 

@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import { BACKUP_FORMAT, backupDigest, parseBackup } from '../src/main/services/backupService'
+import { SCHEMA_VERSION } from '../src/main/services/database'
 import { createApp } from './helpers'
 
 async function populated() {
@@ -128,7 +129,10 @@ describe('metadata backup v2', () => {
     const target = await createApp()
     const summary = target.backups.restore(parseBackup(JSON.stringify(v2)))
     expect(summary).toMatchObject({ version: 2, imported: 2, skipped: 0 })
-    expect(target.service.get(source.src.id).browser.timezoneMode).toBe('off')
+    // No browser settings in v2: a restored profile with a proxy gets the automatic time zone,
+    // one without a proxy keeps this PC's time zone.
+    expect(target.service.get(source.src.id).browser.timezoneMode).toBe('auto')
+    expect(target.service.get(source.plain.id).browser.timezoneMode).toBe('off')
   })
 
   it('v3 carries browser settings and creation dates, but not the backup folder', async () => {
@@ -136,7 +140,7 @@ describe('metadata backup v2', () => {
     app.service.update(app.src.id, { browser: { timezoneMode: 'manual', timezoneManual: 'Asia/Dhaka', language: 'bn-BD', zoomPercent: 125 } })
     app.settings.update({ backupFolder: 'C:\\Users\\me\\Backups' })
     const backup = app.backups.buildBackup('0.4.0')
-    expect(backup.schemaVersion).toBe(3)
+    expect(backup.schemaVersion).toBe(SCHEMA_VERSION)
     expect(JSON.stringify(backup.settings)).not.toContain('Backups')
     expect(backup.profiles[0]).toMatchObject({ createdAt: app.src.createdAt, browser: { timezoneManual: 'Asia/Dhaka', zoomPercent: 125 } })
 

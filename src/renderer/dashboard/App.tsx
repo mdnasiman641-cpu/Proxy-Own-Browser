@@ -117,7 +117,7 @@ function Shell({ data }: { data: AppData }) {
                 }}
               />
             )}
-            {page === 'proxy' && <ProxyPage data={data} />}
+            {page === 'proxy' && <ProxyPage data={data} onOpenDetails={openDetails} />}
             {page === 'backup' && <BackupPage data={data} />}
             {page === 'settings' && <SettingsPage data={data} />}
           </>

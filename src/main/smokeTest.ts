@@ -108,7 +108,10 @@ async function setupStage(ctx: SmokeContext, check: Check, fixtures: Fixtures | 
   const b = ctx.profiles.create({
     name: 'Smoke B',
     // Loopback stays exempt (Chromium default), so B can load local test pages directly.
-    proxy: { enabled: true, protocol: 'http', host: '127.0.0.1', port: 9 }
+    proxy: { enabled: true, protocol: 'http', host: '127.0.0.1', port: 9 },
+    // Port 9 is never a real proxy; this profile tests windows and tabs, so it keeps this PC's
+    // time zone instead of the (default) automatic, proxy-based one.
+    browser: { timezoneMode: 'off' }
   })
   check('partitions are unique', a.partition !== b.partition)
 

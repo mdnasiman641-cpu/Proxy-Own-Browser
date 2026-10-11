@@ -17,6 +17,37 @@ Built with Electron, React + TypeScript + Vite, SQLite (sql.js), and packaged wi
 - **Profile details page** (click a profile's name or the ⓘ button): proxy and IP status, time
   zone, language and browser settings, the real browser engine versions, this PC's hardware (shown
   separately and never changed), and the profile's backups.
+- **What is separate and what is shared** — the details page lists it, and so does this table:
+
+  | Kept only in the profile | Shared by every profile (this PC) |
+  | --- | --- |
+  | Cookies, logins, localStorage, IndexedDB, cache, service workers, site permissions; its proxy and password; its time zone, language, User-Agent and WebRTC setting | Windows and its installed fonts, graphics card and drivers, screen size, the system clock, the Windows certificate store, the single browser engine version, app-wide Chromium state (`Local State`, spellcheck dictionaries), and this PC's network outside the proxy |
+
+  Websites can read shared properties such as screen size, fonts and graphics hardware; the app
+  does not alter them.
+- **Diagnostics** (details page → *Run diagnostics*), with every row showing the **test result**,
+  the **expected** value and a verdict (*Passed / Failed / Warning / Unknown / Info*):
+  - *Proxy connection and public IP*: the latest connection test, the proxy Chromium actually
+    resolves for the profile's session (a `DIRECT` fallback is reported as failed), and the
+    verified exit IP (with a warning if another profile shares it).
+  - *DNS*: HTTP, HTTPS and SOCKS5 proxies receive host names and resolve them; **SOCKS4 resolves on
+    this PC** (warning). Proof that the proxy resolved a name is the latest IP check by host name
+    through it; whether this PC's DNS server also saw lookups cannot be observed and is shown as
+    unknown. Bypass rules are pointed out.
+  - *What the pages report*: time zone, `navigator.language(s)` and User-Agent read inside the
+    open profile's active tab (an isolated world the site cannot see), compared with the profile's
+    settings, and the session partition the page really runs in.
+  - *WebRTC*: a local test with no servers lists the addresses a page could read (random `.local`
+    names = hidden; a raw private address = warning; a raw public address other than the proxy's =
+    failed). An optional **STUN test** runs only after you confirm it: the page contacts
+    `stun.l.google.com` over UDP, and the result is *failed* only when the STUN server saw an
+    address different from the proxy exit IP. If WebRTC exposed an address, the panel offers to
+    switch the profile to *WebRTC only through the proxy* — only when you confirm.
+  - Passing tests do not prove anonymity; they cover only what they test.
+- **WebRTC network access** per profile (browser settings): *Chromium default* (the default),
+  *Public interface only*, or *Only through the proxy* (no direct UDP; calls may not work). Applied
+  with Chromium's own WebRTC IP handling policy to every tab and pop-up; never changed by the app
+  on its own.
 - **Duplicate** a profile with an explicit choice: *settings only* (new empty storage) or *settings
   and browser data* (cookies, logins and site storage copied into the copy's own new storage). A
   duplicate never shares the original's storage.
@@ -29,14 +60,31 @@ Built with Electron, React + TypeScript + Vite, SQLite (sql.js), and packaged wi
 - Every profile shows its assigned proxy and, after a check, **two separate results**:
   1. **Proxy connection** — working / failed (with the reason: invalid settings, rejected
      password, timeout, cannot connect, …) and the **public IP seen through the proxy**.
-  2. **IP location lookup** — country, region, city, approximate coordinates and the IANA time zone
-     of that IP, from `ipwho.is` (fallback `ipapi.co`), plus when it was checked. A working proxy
-     does not imply a successful lookup; a failed lookup shows **Unknown/Failed**, never a guess.
+  2. **IP location lookup** — country, region, city, ISP/organization (and ASN), approximate
+     coordinates and the IANA time zone of that IP, from `ipwho.is` (fallback `ipapi.co`), the
+     **current local time there**, and when it was last detected. A working proxy does not imply a
+     successful lookup; a failed lookup shows **Unknown/Failed**, never a guess.
+- **Proxies & location** page: one row per profile with proxy connection status, public IP (and
+  the previous IP if it rotated), country/region/city, ISP/organization, detected time zone with
+  its live local time, time zone mode and last detection time, plus **Refresh IP & location** per
+  profile and **Refresh all**.
+- **When it is detected**: when a profile with a proxy is created in the dashboard, when a proxy
+  is configured or changed, when you press *Test* or *Refresh IP & location*, and when an
+  Automatic-time-zone profile opens and its last check is older than 30 minutes.
+- **Caching and rotating IPs**: the location found for an exit IP is reused for that same IP for
+  up to 24 hours (no new request). When a check sees a **new exit IP** (rotating proxy), the
+  location is looked up again and the previous IP is shown. *Refresh IP & location* always asks
+  the service again.
 - The lookup is made **through the profile's proxy** in a temporary cookie-less session, so it can
   never report this PC's own IP by mistake. The services only see the proxy's IP. No API keys are
   used. Turn lookups off in Application Settings.
 - Results are stored per profile with the proxy they were made for; after a proxy change the old
   result is marked *out of date*. **Check now** re-checks on demand (no background polling).
+- The **last successful test** (time and exit IP) is kept per profile and shown next to a later
+  failure; it is cleared when the proxy changes.
+- **Changing the proxy of an open profile** asks for confirmation first (all its tabs switch
+  route at once and sites see a new IP in the same session). Without confirmation nothing is
+  saved; this is enforced by the main process, not only by the dashboard.
 - If two profiles' latest checks saw the **same public exit IP**, both are flagged. Providers can
   share or rotate exit IPs, so different proxy addresses do not guarantee different IPs.
 - **Require unique proxy assignment** (Application Settings): saving a profile whose proxy (same
@@ -47,9 +95,10 @@ Built with Electron, React + TypeScript + Vite, SQLite (sql.js), and packaged wi
 
 ### Time zone, language and browser settings (Phase 4)
 Per profile, in its details page:
-- **Time zone**: *This PC* (no change — the default, also for upgraded profiles), *Automatic* (the
-  IANA time zone of the proxy's public IP, refreshed when the proxy changes or on request, cached for
-  12 hours) or *Manual* (any IANA zone, e.g. `Asia/Dhaka`). In Automatic mode a profile whose time
+- **Time zone**: *Automatic* (the IANA time zone of the proxy's public IP — **the default for every
+  profile that has a proxy**; when a proxy is configured for the first time the profile switches
+  to it), *Manual* (any IANA zone, e.g. `Asia/Dhaka`) or *This PC* (no change — default for profiles
+  without a proxy). In Automatic mode a profile whose time
   zone can't be detected **does not open** and says why; if a valid zone was detected before for the
   same proxy it is used with a warning. It never silently uses this PC's zone. IP geolocation is
   approximate and can be wrong — use Manual mode when you know better.
@@ -62,7 +111,9 @@ Per profile, in its details page:
   (`Emulation.setTimezoneOverride`, `setLocaleOverride`, `setUserAgentOverride` for the language
   list) through Electron's `webContents.debugger`, **before the first page loads**. This changes what
   web pages see; it does **not** change the Windows clock or other programs. The smoke test checks
-  the values pages actually report.
+  the values pages actually report. The app also reads
+  `Intl.DateTimeFormat().resolvedOptions().timeZone` from every loaded page (in an isolated world
+  page scripts can't change) and shows "Verified in the open window" — or a warning if it differs.
 - Nothing about the PC's hardware (CPU, RAM, GPU, canvas/WebGL) is faked. The details page shows the
   real Electron/Chromium versions and this PC's hardware for information only.
 
@@ -109,6 +160,9 @@ English (default) and **Bangla (বাংলা)** — switch in Application Set
 a Bangla translation (checked by a unit test).
 
 ### Local backup & restore (Phase 4)
+- Each profile shows its **backup status** in the profile list and on its details page: the last
+  full (browser-data) backup, the last settings backup that included it, a full backup scheduled
+  for the next start, or a failed last attempt.
 Backups stay **on this PC**, in a folder you choose with the folder dialog (Backup & Restore →
 Backup folder). Nothing is uploaded. Actions: back up *this profile* (details page), *selected
 profiles* (Profiles → select → Back up), *all profiles*; browse the backups in the folder (or choose
@@ -216,7 +270,8 @@ How the test protects you:
   dialog; archive paths are validated (no `..`, absolute paths, drive letters, links or reserved
   names), and manifests are size-limited and schema-checked.
 - The only external requests the app makes on its own are the IP check and IP location lookup when
-  you check a profile (described above).
+  you check a profile (described above). The WebRTC STUN test contacts a public STUN server only
+  after you start and confirm it.
 - The DevTools-protocol connection used for time zone/language is internal to the app; it is not a
   remote debugging port and is not reachable from outside.
 - Proxy passwords are encrypted with Windows DPAPI via Electron `safeStorage`, are never sent back to
@@ -296,6 +351,14 @@ launches the real app twice with a temporary data folder. It checks, among other
   the next start; full backup of a closed profile, wrong password and damaged backup rejected,
   restore as a new profile with the original cookies; settings, network status and time zone
   persisted after restart; the new pages in Bangla
+- Proxy location & time zone: two profiles on proxies with different exit IPs (New York and
+  Chicago) open at the same time — each shows its own IP, city, ISP and time zone, each page
+  reports its own `Intl` time zone and reaches the internet through its own proxy, and the app's
+  in-window verification agrees; the Proxies & location page shows the right row for each;
+  changing one profile's proxy re-detects only that profile (its open window switches time zone)
+  while the other is unchanged; cached lookups for an unchanged IP; a rotating proxy's new IP
+  noticed and located; manual refresh; a missing city shown as unknown; location-service failure
+  and timeout reported as failed with the last valid time zone kept
 - Profile Manager (through the real dashboard IPC): bulk wizard preview and creation of 25
   profiles with unique partitions and no windows opened, retry without duplicates, groups, bulk
   move and tag changes, templates, bulk open stopping at the window limit, status changes on a tab
@@ -309,8 +372,13 @@ run, so a temporary internet problem doesn't break the build.
 
 `.github/workflows/ci.yml` runs on every push to `main` or `feature/**` and on pull requests, on a
 GitHub Windows runner with Node 24: `npm ci`, typecheck, lint, unit tests, build, the end-to-end
-smoke test, and the Windows EXE builds (`npm run dist:win` and `npm run dist:portable`). The EXEs are attached to the workflow run as the
-`proxy-own-browser-windows` artifact (kept 14 days).
+smoke test, and the Windows EXE builds (`npm run dist:win` and `npm run dist:portable`). It then
+reads the product name, version, company and copyright from each EXE and checks that it carries
+the app icon. The EXEs are attached to the workflow run as the `proxy-own-browser-windows`
+artifact (kept 14 days).
+
+The app icon is `build/icon.png` (1024 px source) and `build/icon.ico` (16–256 px), used for the
+EXEs, the installer and the uninstaller.
 
 ## Where data is stored
 
@@ -337,6 +405,17 @@ unchanged. Before migrating, the app copies the database to `profiles.sqlite.pre
 If a migration fails, the file is left untouched and the app shows the error instead of starting
 with an empty list. A database created by a newer version of the app is refused rather than
 modified.
+
+Version 0.6.0 upgrades schema 4 to 5, only **adding**: the last successful proxy test (time and
+exit IP) to `profile_network_status` (filled from existing successful results) and the list of
+profiles a multi-profile backup covered to `backup_history`. The WebRTC setting is stored in the
+existing `browser_config` JSON; profiles without it get *Chromium default*. A verified
+`profiles.sqlite.pre-v5-<time>.bak` copy is made first.
+
+Version 0.5.0 upgrades schema 3 to 4: adds when a location was detected, whether it was reused,
+and the previous exit IP to `profile_network_status`, and switches profiles **that use a proxy and
+have no manual time zone** to the automatic, proxy-based time zone (manual choices are kept;
+profiles without a proxy are unchanged). The usual verified pre-upgrade copy is made first.
 
 Version 0.4.0 upgrades schema 2 to 3, again only **adding**: a `browser_config` column on profiles
 (existing profiles get the defaults, which keep the previous behaviour — no time zone or language
@@ -412,6 +491,11 @@ scripts/smoke-fixtures.mjs   Local proxy/endpoint servers used only by the smoke
 5. Change A's proxy and check again: the old result is marked out of date; B is unchanged.
 6. Restart the app: proxies, time zones, languages and logins of both profiles are kept.
 7. Put a wrong port on a test profile and open it: pages show the proxy error, not your own IP.
+8. With A open, change its proxy: a confirmation appears; *Cancel* leaves everything unchanged.
+9. With A open, go to its details page → **Run diagnostics**: proxy route, public IP, DNS, page
+   time zone/language/User-Agent, partition and the local WebRTC test each show a result.
+   **Run STUN test** (after confirming) compares the address the STUN server saw with the proxy
+   IP. Try *WebRTC network access → Only through the proxy* and run it again.
 
 ### Local backup and restore
 1. Backup & Restore → **Choose folder…** and pick a folder on your PC (e.g. on another drive).
@@ -430,6 +514,12 @@ scripts/smoke-fixtures.mjs   Local proxy/endpoint servers used only by the smoke
 
 ## Known limitations
 
+- **WebRTC through an HTTP or SOCKS proxy**: Chromium sends WebRTC's UDP traffic directly, not
+  through the proxy. With *Chromium default* a STUN server (and so a website) can learn this PC's
+  real public IP; *Only through the proxy* prevents that but can break calls. The setting only
+  affects new connections; reload open pages.
+- **DNS with SOCKS4** is resolved on this PC. The app cannot see whether this PC's DNS server
+  received lookups, so diagnostics report that part as unknown.
 - **SOCKS proxy authentication is not supported** by Chromium. Use an HTTP/HTTPS proxy when the
   provider requires a username and password.
 - **Window limit** is 1–10 (default 2), and each window holds up to 20 tabs. Real capacity depends

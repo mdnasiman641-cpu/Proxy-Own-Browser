@@ -38,10 +38,14 @@ export interface Fixtures {
   echoBase: string
   authProxyPort: number
   openProxyPort: number
+  sameExitProxyPort: number
+  labProxyPort: number
   challengeProxyPort: number
   blackholePort: number
   closedPort: number
   proxiedIp: string
+  /** Exit identities of the fixture proxies: ny (auth/same-exit), chi (open), lab-a/lab-b (lab). */
+  exits: Record<string, { ip: string; city: string | null; timezone: string; isp: string }>
   user: string
   pass: string
 }
