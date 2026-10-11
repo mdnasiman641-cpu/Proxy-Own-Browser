@@ -82,7 +82,7 @@ jobs:
             done
             grep -E '^\[smoke\] verify: PASS' ci-smoke.log | sed -e 's/^\[smoke\] verify: PASS //' > report.txt || true
             [ -s report.txt ] && emit notice "smoke test: restart checks" report.txt
-            grep -E '^\[smoke-log\]' ci-smoke.log | tail -n 70 > report.txt || true
+            grep -E '^\[smoke-log\]' ci-smoke.log | tail -n 28 | cut -c 12-220 > report.txt || true
             [ -s report.txt ] && emit warning "smoke test: app log after failure" report.txt
           fi
           exit 0

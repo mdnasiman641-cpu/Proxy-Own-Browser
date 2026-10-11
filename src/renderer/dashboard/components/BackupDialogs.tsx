@@ -199,7 +199,7 @@ export function RestoreDialog({
   onClose: () => void
   onRestored: (outcome: RestoreOutcome) => void
 }) {
-  const { t } = useI18n()
+  const { t, formatDate } = useI18n()
   const originals = file.profiles.filter((p) => p.id && existingIds.has(p.id))
   const [target, setTarget] = useState<RestoreTarget>(originals.length ? 'original' : 'new')
   const [selected, setSelected] = useState<Set<string>>(() => new Set(file.profiles.map((p) => p.id ?? '').filter(Boolean)))
@@ -276,7 +276,7 @@ export function RestoreDialog({
       <form className="form" onSubmit={(e) => void submit(e)} noValidate>
         <p className="mono small">{file.fileName}</p>
         <p className="small">
-          {t(file.kind === 'full' ? 'restore.kindFull' : 'restore.kindMetadata')} · {file.createdAt ?? '—'} · {t('restore.appVersion', { version: file.appVersion ?? '—' })}
+          {t(file.kind === 'full' ? 'restore.kindFull' : 'restore.kindMetadata')} · {formatDate(file.createdAt)} · {t('restore.appVersion', { version: file.appVersion ?? '—' })}
         </p>
         {!single && (
           <fieldset className="choice-list compact">

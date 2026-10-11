@@ -593,3 +593,8 @@ kbd {
 @media (max-width: 900px) {
   .status-grid, .field-row { grid-template-columns: 1fr; }
 }
+.choice-list legend { font-weight: 600; font-size: 13px; margin-bottom: 6px; padding: 0; }
+.net-line { flex-wrap: nowrap; white-space: nowrap; }
+@media (max-width: 1500px) {
+  .profiles-table .row-actions .btn-text { display: none; }
+}

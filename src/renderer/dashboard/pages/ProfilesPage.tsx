@@ -225,7 +225,8 @@ export function ProfilesPage({ data, createRequested, onCreateHandled, wizardTem
     </>
   )
 
-  const rowActions = (p: Profile) => {
+  /** `inTable` leaves out Duplicate (available in card view and on the details page) to keep rows compact. */
+  const rowActions = (p: Profile, inTable = false) => {
     const running = status(p) !== 'closed'
     return (
       <div className="row-actions">
@@ -261,15 +262,17 @@ export function ProfilesPage({ data, createRequested, onCreateHandled, wizardTem
         >
           <Icon name="edit" />
         </button>
-        <button
-          type="button"
-          className="icon-button"
-          title={t('dup.action')}
-          aria-label={t('dup.title', { name: p.name })}
-          onClick={() => setDialog({ kind: 'duplicate', profile: p })}
-        >
-          <Icon name="copy" />
-        </button>
+        {!inTable && (
+          <button
+            type="button"
+            className="icon-button"
+            title={t('dup.action')}
+            aria-label={t('dup.title', { name: p.name })}
+            onClick={() => setDialog({ kind: 'duplicate', profile: p })}
+          >
+            <Icon name="copy" />
+          </button>
+        )}
         <button
           type="button"
           className="icon-button danger"
@@ -522,7 +525,7 @@ export function ProfilesPage({ data, createRequested, onCreateHandled, wizardTem
                       <td><TagList tags={p.tags} /></td>
                       <td className="proxy-cell">{proxyCell(p)}</td>
                       <td className="muted nowrap">{formatDate(p.lastOpenedAt)}</td>
-                      <td className="actions-col">{rowActions(p)}</td>
+                      <td className="actions-col">{rowActions(p, true)}</td>
                     </tr>
                   ))}
                 </tbody>
