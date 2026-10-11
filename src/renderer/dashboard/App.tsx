@@ -4,6 +4,7 @@ import { I18nProvider, useI18n } from './i18n'
 import { BackupPage } from './pages/BackupPage'
 import { DashboardPage } from './pages/DashboardPage'
 import { GroupsTagsPage } from './pages/GroupsTagsPage'
+import { ProfileDetailsPage } from './pages/ProfileDetailsPage'
 import { ProfilesPage } from './pages/ProfilesPage'
 import { ProxyPage } from './pages/ProxyPage'
 import { SettingsPage } from './pages/SettingsPage'
@@ -11,7 +12,7 @@ import { TemplatesPage } from './pages/TemplatesPage'
 import type { TKey } from './strings'
 import { useAppData, type AppData } from './useAppData'
 
-export type PageId = 'dashboard' | 'profiles' | 'groups' | 'templates' | 'proxy' | 'backup' | 'settings'
+export type PageId = 'dashboard' | 'profiles' | 'groups' | 'templates' | 'proxy' | 'backup' | 'settings' | 'details'
 
 const NAV: { id: PageId; label: TKey; icon: IconName }[] = [
   { id: 'dashboard', label: 'nav.dashboard', icon: 'dashboard' },
@@ -38,6 +39,11 @@ function Shell({ data }: { data: AppData }) {
   const [createRequested, setCreateRequested] = useState(false)
   /** '' opens the wizard without a template; null means no request. */
   const [wizardTemplate, setWizardTemplate] = useState<string | null>(null)
+  const [detailsId, setDetailsId] = useState<string | null>(null)
+  const openDetails = useCallback((id: string) => {
+    setDetailsId(id)
+    setPage('details')
+  }, [])
 
   const goCreate = useCallback((): void => {
     setPage('profiles')
@@ -58,7 +64,7 @@ function Shell({ data }: { data: AppData }) {
             <button
               key={item.id}
               type="button"
-              className={`nav-item ${page === item.id ? 'active' : ''}`}
+              className={`nav-item ${page === item.id || (page === 'details' && item.id === 'profiles') ? 'active' : ''}`}
               aria-current={page === item.id ? 'page' : undefined}
               onClick={() => setPage(item.id)}
               data-nav={item.id}
@@ -87,7 +93,7 @@ function Shell({ data }: { data: AppData }) {
           </div>
         ) : (
           <>
-            {page === 'dashboard' && <DashboardPage data={data} onCreate={goCreate} onNavigate={setPage} />}
+            {page === 'dashboard' && <DashboardPage data={data} onCreate={goCreate} onNavigate={setPage} onOpenDetails={openDetails} />}
             {page === 'profiles' && (
               <ProfilesPage
                 data={data}
@@ -95,7 +101,11 @@ function Shell({ data }: { data: AppData }) {
                 onCreateHandled={handleCreate}
                 wizardTemplateId={wizardTemplate}
                 onWizardHandled={handleWizard}
+                onOpenDetails={openDetails}
               />
+            )}
+            {page === 'details' && detailsId && (
+              <ProfileDetailsPage data={data} profileId={detailsId} onBack={() => setPage('profiles')} />
             )}
             {page === 'groups' && <GroupsTagsPage data={data} />}
             {page === 'templates' && (

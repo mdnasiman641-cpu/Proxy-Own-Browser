@@ -4,6 +4,7 @@ import { app, type WebContents } from 'electron'
 import type { DuplicateResult, FullBackupOutcome, ProfileNetworkStatus, RuntimeInfo } from '@shared/types'
 import {
   httpJson,
+  pageHas,
   readCookie,
   viaDashboard,
   waitFor,
@@ -184,10 +185,9 @@ export async function phase4SetupChecks(ctx: SmokeContext, check: Check, f: Fixt
   const headersA = (await tabA2.executeJavaScript(`fetch('/headers').then((r) => r.json())`)) as { acceptLanguage: string | null }
   check('profile language sets the Accept-Language header', (headersA.acceptLanguage ?? '').startsWith('bn-BD'), headersA.acceptLanguage ?? 'none')
   check(
-    'navigator.language follows the profile language',
-    envA.lang.toLowerCase().startsWith('bn'),
-    `navigator.language=${envA.lang}; navigator.languages=${JSON.stringify(envA.langs)}`,
-    true
+    'navigator.language(s) follow the profile language',
+    envA.lang === 'bn-BD' && JSON.stringify(envA.langs) === '["bn-BD","bn","en"]',
+    `navigator.language=${envA.lang}; navigator.languages=${JSON.stringify(envA.langs)}`
   )
   const tabB2 = await load(ctx, f, bId, 43)
   const envB = await env(tabB2)
@@ -261,6 +261,25 @@ export async function phase4SetupChecks(ctx: SmokeContext, check: Check, f: Fixt
     settingsOnly.data === 'not-requested' && (await readCookie(ctx, settingsOnly.profile.partition)).length === 0
   )
   ctx.profiles.delete(settingsOnly.profile.id)
+
+  // ---- dashboard pages for the new features render (the UI is in Bangla at this point) ----
+  const dash = ctx.getDashboard()!.webContents
+  await dash.executeJavaScript(`document.querySelector('[data-nav="profiles"]').click()`)
+  await pageHas(dash, '[data-testid="details-button"]')
+  await dash.executeJavaScript(`document.querySelector('[data-testid="details-button"]').click()`)
+  const detailsShown =
+    (await pageHas(dash, '[data-testid="profile-details"] [data-testid="network-panel"]')) &&
+    (await pageHas(dash, '[data-testid="browser-settings"]')) &&
+    (await pageHas(dash, '[data-testid="runtime-panel"]'))
+  const banglaHeading = await dash.executeJavaScript(
+    `document.querySelector('[data-testid="network-panel"] h2')?.textContent ?? ''`
+  )
+  check('profile details page shows network, browser settings and runtime panels', detailsShown, banglaHeading)
+  check('new pages are translated (Bangla)', banglaHeading === 'প্রক্সি ও আইপি অবস্থা', banglaHeading)
+  await dash.executeJavaScript(`document.querySelector('[data-nav="backup"]').click()`)
+  const backupShown = (await pageHas(dash, '[data-testid="backup-folder"]')) && (await pageHas(dash, '[data-testid="backup-files"] table'))
+  const folderText = await dash.executeJavaScript(`document.querySelector('[data-testid="backup-folder"] .mono')?.textContent ?? ''`)
+  check('backup page lists the local backup folder and its backups', backupShown && folderText === backupFolder(), folderText)
 
   ctx.windows.close(proxied.id)
   await waitFor(() => !ctx.windows.isOpen(proxied.id))

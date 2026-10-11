@@ -83,8 +83,9 @@ describe('browser settings', () => {
     expect(isValidLanguageTag('bn-BD')).toBe(true)
     expect(isValidLanguageTag('en')).toBe(true)
     expect(isValidLanguageTag('not a language')).toBe(false)
-    expect(acceptLanguageFor('bn-BD')).toBe('bn-BD,bn;q=0.9,en;q=0.8')
-    expect(acceptLanguageFor('en-US')).toBe('en-US,en;q=0.9')
+    expect(acceptLanguageFor('bn-BD')).toBe('bn-BD,bn,en')
+    expect(acceptLanguageFor('en-US')).toBe('en-US,en')
+    expect(acceptLanguageFor('en')).toBe('en')
   })
 
   it('reads damaged stored settings field by field', () => {

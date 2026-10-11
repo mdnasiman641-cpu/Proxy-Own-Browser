@@ -222,11 +222,14 @@ export function chromeUserAgent(electronUserAgent: string, appName: string): str
     .join(' ')
 }
 
-/** Accept-Language header value for a language tag, e.g. `bn-BD,bn;q=0.9,en;q=0.8`. */
+/**
+ * Ordered language list for a language tag, e.g. `bn-BD,bn,en`. Chromium adds the q-values to
+ * the Accept-Language header itself and uses the same list for navigator.languages.
+ */
 export function acceptLanguageFor(tag: string): string {
   const base = tag.split('-')[0]!
   const parts = [tag]
-  if (base !== tag) parts.push(`${base};q=0.9`)
-  if (base !== 'en') parts.push('en;q=0.8')
+  if (base !== tag) parts.push(base)
+  if (base !== 'en') parts.push('en')
   return parts.join(',')
 }

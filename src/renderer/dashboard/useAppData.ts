@@ -6,8 +6,10 @@ import type {
   ProfileInput,
   ProfileRuntimeStatus,
   ProfileTag,
+  ProfileNetworkStatus,
   ProfileTemplate,
-  ProfileUpdate
+  ProfileUpdate,
+  SaveProfileOptions
 } from '@shared/types'
 import { errorMessage, unwrap } from '../common/ipc'
 
@@ -30,6 +32,8 @@ export function useAppData() {
   const [templates, setTemplates] = useState<TemplateWithProblems[]>([])
   const [statuses, setStatuses] = useState<Record<string, ProfileRuntimeStatus>>({})
   const [settings, setSettings] = useState<AppSettings | null>(null)
+  const [network, setNetwork] = useState<Record<string, ProfileNetworkStatus>>({})
+  const [startupNotes, setStartupNotes] = useState<string[]>([])
   const [loading, setLoading] = useState(true)
   const [loadError, setLoadError] = useState<string | null>(null)
   const [toasts, setToasts] = useState<Toast[]>([])
@@ -51,6 +55,15 @@ export function useAppData() {
     setTemplates(tpl)
   }, [])
 
+  /** Stored proxy/IP status of every checked profile (no network requests are made here). */
+  const refreshNetwork = useCallback(async () => {
+    try {
+      setNetwork(await unwrap(window.pob.networkStatuses()))
+    } catch {
+      /* shown as "not checked" */
+    }
+  }, [])
+
   const refresh = useCallback(async () => {
     try {
       const [list, st, s] = await Promise.all([
@@ -61,30 +74,35 @@ export function useAppData() {
       setProfiles(list)
       setStatuses(st)
       setSettings(s)
-      await refreshCatalog()
+      await Promise.all([refreshCatalog(), refreshNetwork()])
       setLoadError(null)
     } catch (error) {
       setLoadError(errorMessage(error))
     } finally {
       setLoading(false)
     }
-  }, [refreshCatalog])
+  }, [refreshCatalog, refreshNetwork])
 
   useEffect(() => {
     void refresh()
+    void unwrap(window.pob.startupNotes())
+      .then(setStartupNotes)
+      .catch(() => {})
+    const offNetwork = window.pob.onNetworkStatusChanged(() => void refreshNetwork())
     const offProfiles = window.pob.onProfilesChanged(() => void refresh())
     const offStatuses = window.pob.onProfileStatusesChanged((s) => setStatuses(s))
     const offCatalog = window.pob.onCatalogChanged(() => void refreshCatalog().catch(() => {}))
     return () => {
+      offNetwork()
       offProfiles()
       offStatuses()
       offCatalog()
     }
-  }, [refresh, refreshCatalog])
+  }, [refresh, refreshCatalog, refreshNetwork])
 
   const createProfile = useCallback(
-    async (input: ProfileInput) => {
-      const profile = await unwrap(window.pob.createProfile(input))
+    async (input: ProfileInput, options?: SaveProfileOptions) => {
+      const profile = await unwrap(window.pob.createProfile(input, options))
       await refresh()
       return profile
     },
@@ -92,8 +110,8 @@ export function useAppData() {
   )
 
   const updateProfile = useCallback(
-    async (id: string, update: ProfileUpdate) => {
-      const profile = await unwrap(window.pob.updateProfile(id, update))
+    async (id: string, update: ProfileUpdate, options?: SaveProfileOptions) => {
+      const profile = await unwrap(window.pob.updateProfile(id, update, options))
       await refresh()
       return profile
     },
@@ -146,6 +164,10 @@ export function useAppData() {
     statuses,
     runningCount,
     settings,
+    network,
+    refreshNetwork,
+    startupNotes,
+    dismissStartupNotes: () => setStartupNotes([]),
     loading,
     loadError,
     toasts,

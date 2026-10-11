@@ -52,6 +52,10 @@ interface Tab {
   view: WebContentsView
   error: string | null
   crashed: boolean
+  /** False until the profile's time zone/language are applied; loads wait for it. */
+  ready: boolean
+  /** Latest address requested before the tab was ready. */
+  pendingUrl: string | null
 }
 
 export interface ProfileWindow {
@@ -508,7 +512,7 @@ export class ProfileWindowManager {
         zoomFactor: entry.profile.browser.zoomPercent / 100
       }
     })
-    const tab: Tab = { id: nextTabId(), view, error: null, crashed: false }
+    const tab: Tab = { id: nextTabId(), view, error: null, crashed: false, ready: isEmpty(entry.emulation), pendingUrl: null }
     entry.tabs.add(tab.id, tab, options)
     this.attachTabHandlers(entry, tab)
     this.attachShortcuts(entry, view.webContents)
@@ -518,9 +522,14 @@ export class ProfileWindowManager {
       this.loadInTab(tab, url)
     } else {
       // The time zone must be in place before the first page script runs.
+      tab.pendingUrl = url
       void applyPageEmulation(view.webContents, entry.emulation, this.deps.logger).then((ok) => {
         if (ok) {
-          this.loadInTab(tab, url)
+          tab.ready = true
+          // Load the newest address requested meanwhile (e.g. the user already navigated).
+          const next = tab.pendingUrl ?? url
+          tab.pendingUrl = null
+          this.loadInTab(tab, next)
         } else {
           tab.error =
             "This profile's time zone/language could not be applied, so the page was not loaded (it would have shown this PC's settings). Close the tab and try again."
@@ -562,6 +571,11 @@ export class ProfileWindowManager {
 
   private loadInTab(tab: Tab, url: string): void {
     if (!isNavigableUrl(url) || tab.view.webContents.isDestroyed()) return
+    if (!tab.ready) {
+      // Never load a page before the profile's time zone/language are in place.
+      tab.pendingUrl = url
+      return
+    }
     tab.error = null
     tab.view.webContents.loadURL(url).catch(() => {
       /* failures are reported through did-fail-load */

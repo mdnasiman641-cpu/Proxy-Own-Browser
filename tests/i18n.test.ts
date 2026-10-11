@@ -46,7 +46,13 @@ describe('dashboard translations', () => {
       'outcome.': ['opened', 'joined', 'focused', 'closed', 'not-open', 'moved', 'ungrouped', 'updated', 'deleted', 'deleted-with-data', 'deleted-data-partially-removed', 'created', 'exists'],
       'bulk.action.': ['open', 'close', 'assign-group', 'change-tags', 'delete'],
       'wizard.issue.': ['exists', 'duplicate-in-batch', 'invalid-name'],
-      'wizard.step.': ['setup', 'preview', 'create']
+      'wizard.step.': ['setup', 'preview', 'create'],
+      'net.state.': ['ok', 'failed', 'none', 'skipped'],
+      'fb.status.': ['success', 'failed', 'scheduled'],
+      'hist.status.': ['success', 'failed', 'scheduled', 'partial'],
+      'hist.kind.': ['metadata', 'full', 'restore', 'duplicate'],
+      'browser.tz.': ['off', 'auto', 'manual'],
+      'jobs.kind.': ['full-backup', 'full-restore', 'copy-data']
     }
     for (const [prefix, names] of Object.entries(families)) {
       for (const name of names) expect(`${prefix}${name}` in en).toBe(true)

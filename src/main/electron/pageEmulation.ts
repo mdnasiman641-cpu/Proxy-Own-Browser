@@ -14,7 +14,7 @@ export interface PageEmulation {
   locale: string | null
   /** The profile's User-Agent (real runtime version; see browserConfig.ts). */
   userAgent: string
-  /** Accept-Language list for the profile language, e.g. "bn-BD,bn;q=0.9,en;q=0.8". */
+  /** Ordered language list for the profile language, e.g. "bn-BD,bn,en" (no q-values). */
   acceptLanguage: string | null
 }
 
