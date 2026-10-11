@@ -72,7 +72,7 @@ export class ProxyTester implements RouteChecker {
    * the same proxy and throw-away session — so the location is that of the proxy's exit IP,
    * never this PC's own connection.
    */
-  check(key: string, target: ProxyTestTarget, options: { geo: boolean }): Promise<CheckResult> {
+  check(key: string, target: ProxyTestTarget, options: { geo: boolean | ((ip: string) => boolean) }): Promise<CheckResult> {
     const running = this.inFlight.get(key)
     if (running) return running
     if (this.inFlight.size >= MAX_CONCURRENT_TESTS) {
@@ -85,7 +85,7 @@ export class ProxyTester implements RouteChecker {
     return promise
   }
 
-  private async run(key: string, target: ProxyTestTarget, geo: boolean): Promise<CheckResult> {
+  private async run(key: string, target: ProxyTestTarget, geo: boolean | ((ip: string) => boolean)): Promise<CheckResult> {
     const ses = session.fromPartition(`proxy-test-${key}`, { cache: false })
     const route = routeLabel(target.proxy)
     try {
@@ -101,7 +101,8 @@ export class ProxyTester implements RouteChecker {
         `Proxy test ${key}: ${result.status}${result.responseTimeMs !== null ? ` in ${result.responseTimeMs} ms` : ''}`
       )
       let location: GeoLookupResult | null = null
-      if (geo && result.ok) {
+      const wantGeo = typeof geo === 'function' ? result.ok && result.ip !== null && geo(result.ip) : geo
+      if (wantGeo && result.ok) {
         location = await runGeoLookup({
           fetcher: this.createFetcher(ses, target),
           endpoints: this.geoEndpoints,

@@ -142,6 +142,7 @@ export function ProfileDetailsPage({ data, profileId, onBack }: Props) {
           <NetworkPanel
             profile={profile}
             status={data.network[profile.id]}
+            reported={running ? data.reportedTimezones[profile.id] : undefined}
             checking={checking}
             onCheck={() => void check()}
             geoEnabled={data.settings?.ipGeolocation ?? true}

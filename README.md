@@ -29,9 +29,21 @@ Built with Electron, React + TypeScript + Vite, SQLite (sql.js), and packaged wi
 - Every profile shows its assigned proxy and, after a check, **two separate results**:
   1. **Proxy connection** — working / failed (with the reason: invalid settings, rejected
      password, timeout, cannot connect, …) and the **public IP seen through the proxy**.
-  2. **IP location lookup** — country, region, city, approximate coordinates and the IANA time zone
-     of that IP, from `ipwho.is` (fallback `ipapi.co`), plus when it was checked. A working proxy
-     does not imply a successful lookup; a failed lookup shows **Unknown/Failed**, never a guess.
+  2. **IP location lookup** — country, region, city, ISP/organization (and ASN), approximate
+     coordinates and the IANA time zone of that IP, from `ipwho.is` (fallback `ipapi.co`), the
+     **current local time there**, and when it was last detected. A working proxy does not imply a
+     successful lookup; a failed lookup shows **Unknown/Failed**, never a guess.
+- **Proxies & location** page: one row per profile with proxy connection status, public IP (and
+  the previous IP if it rotated), country/region/city, ISP/organization, detected time zone with
+  its live local time, time zone mode and last detection time, plus **Refresh IP & location** per
+  profile and **Refresh all**.
+- **When it is detected**: when a profile with a proxy is created in the dashboard, when a proxy
+  is configured or changed, when you press *Test* or *Refresh IP & location*, and when an
+  Automatic-time-zone profile opens and its last check is older than 30 minutes.
+- **Caching and rotating IPs**: the location found for an exit IP is reused for that same IP for
+  up to 24 hours (no new request). When a check sees a **new exit IP** (rotating proxy), the
+  location is looked up again and the previous IP is shown. *Refresh IP & location* always asks
+  the service again.
 - The lookup is made **through the profile's proxy** in a temporary cookie-less session, so it can
   never report this PC's own IP by mistake. The services only see the proxy's IP. No API keys are
   used. Turn lookups off in Application Settings.
@@ -47,9 +59,10 @@ Built with Electron, React + TypeScript + Vite, SQLite (sql.js), and packaged wi
 
 ### Time zone, language and browser settings (Phase 4)
 Per profile, in its details page:
-- **Time zone**: *This PC* (no change — the default, also for upgraded profiles), *Automatic* (the
-  IANA time zone of the proxy's public IP, refreshed when the proxy changes or on request, cached for
-  12 hours) or *Manual* (any IANA zone, e.g. `Asia/Dhaka`). In Automatic mode a profile whose time
+- **Time zone**: *Automatic* (the IANA time zone of the proxy's public IP — **the default for every
+  profile that has a proxy**; when a proxy is configured for the first time the profile switches
+  to it), *Manual* (any IANA zone, e.g. `Asia/Dhaka`) or *This PC* (no change — default for profiles
+  without a proxy). In Automatic mode a profile whose time
   zone can't be detected **does not open** and says why; if a valid zone was detected before for the
   same proxy it is used with a warning. It never silently uses this PC's zone. IP geolocation is
   approximate and can be wrong — use Manual mode when you know better.
@@ -62,7 +75,9 @@ Per profile, in its details page:
   (`Emulation.setTimezoneOverride`, `setLocaleOverride`, `setUserAgentOverride` for the language
   list) through Electron's `webContents.debugger`, **before the first page loads**. This changes what
   web pages see; it does **not** change the Windows clock or other programs. The smoke test checks
-  the values pages actually report.
+  the values pages actually report. The app also reads
+  `Intl.DateTimeFormat().resolvedOptions().timeZone` from every loaded page (in an isolated world
+  page scripts can't change) and shows "Verified in the open window" — or a warning if it differs.
 - Nothing about the PC's hardware (CPU, RAM, GPU, canvas/WebGL) is faked. The details page shows the
   real Electron/Chromium versions and this PC's hardware for information only.
 
@@ -296,6 +311,14 @@ launches the real app twice with a temporary data folder. It checks, among other
   the next start; full backup of a closed profile, wrong password and damaged backup rejected,
   restore as a new profile with the original cookies; settings, network status and time zone
   persisted after restart; the new pages in Bangla
+- Proxy location & time zone: two profiles on proxies with different exit IPs (New York and
+  Chicago) open at the same time — each shows its own IP, city, ISP and time zone, each page
+  reports its own `Intl` time zone and reaches the internet through its own proxy, and the app's
+  in-window verification agrees; the Proxies & location page shows the right row for each;
+  changing one profile's proxy re-detects only that profile (its open window switches time zone)
+  while the other is unchanged; cached lookups for an unchanged IP; a rotating proxy's new IP
+  noticed and located; manual refresh; a missing city shown as unknown; location-service failure
+  and timeout reported as failed with the last valid time zone kept
 - Profile Manager (through the real dashboard IPC): bulk wizard preview and creation of 25
   profiles with unique partitions and no windows opened, retry without duplicates, groups, bulk
   move and tag changes, templates, bulk open stopping at the window limit, status changes on a tab
@@ -337,6 +360,11 @@ unchanged. Before migrating, the app copies the database to `profiles.sqlite.pre
 If a migration fails, the file is left untouched and the app shows the error instead of starting
 with an empty list. A database created by a newer version of the app is refused rather than
 modified.
+
+Version 0.5.0 upgrades schema 3 to 4: adds when a location was detected, whether it was reused,
+and the previous exit IP to `profile_network_status`, and switches profiles **that use a proxy and
+have no manual time zone** to the automatic, proxy-based time zone (manual choices are kept;
+profiles without a proxy are unchanged). The usual verified pre-upgrade copy is made first.
 
 Version 0.4.0 upgrades schema 2 to 3, again only **adding**: a `browser_config` column on profiles
 (existing profiles get the defaults, which keep the previous behaviour — no time zone or language

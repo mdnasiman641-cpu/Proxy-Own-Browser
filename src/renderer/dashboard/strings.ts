@@ -16,7 +16,7 @@ const en = {
   'nav.profiles': 'Profiles',
   'nav.groups': 'Groups & tags',
   'nav.templates': 'Templates',
-  'nav.proxies': 'Proxy settings',
+  'nav.proxies': 'Proxies & location',
   'nav.backup': 'Backup & restore',
   'nav.settings': 'Settings',
 
@@ -279,15 +279,7 @@ const en = {
   'proxyResult.checkedWith': 'Checked with',
   'proxyResult.tested': 'Tested',
 
-  'proxyPage.subtitle':
-    'Every profile can use its own HTTP, HTTPS, SOCKS4 or SOCKS5 proxy. Changes apply to open windows immediately.',
-  'proxyPage.info':
-    'Passwords are encrypted with Windows data protection for your user account and are never shown again or written to logs. Backups do not include passwords.',
   'proxyPage.empty': 'Create a profile first, then assign it a proxy here.',
-  'proxyPage.col.auth': 'Authentication',
-  'proxyPage.col.bypass': 'Bypass',
-  'proxyPage.authSaved': 'Username & password saved',
-  'proxyPage.test': 'Test',
   'proxyPage.configure': 'Configure',
   'proxyPage.modalTitle': 'Proxy for {name}',
 
@@ -366,7 +358,6 @@ const en = {
   'details.noBackups': 'No backups of this profile yet.',
   'details.saved': 'Browser settings saved',
 
-  'net.checkNow': 'Check now',
   'net.checking': 'Checking…',
   'net.proxyConnection': 'Proxy connection',
   'net.ipVerification': 'IP location lookup',
@@ -590,6 +581,33 @@ const en = {
   'settings.pressureNote': 'Nothing is closed automatically. Close profile windows yourself if the PC becomes slow.',
 
   'wizard.allowShared': 'I understand all these profiles will use the same proxy (unique proxy assignment is on).',
+  'net.refresh': 'Refresh IP & location',
+  'net.previousIp': 'Previous IP',
+  'net.ipChanged': 'changed {date}',
+  'net.isp': 'ISP',
+  'net.org': 'Organization',
+  'net.asn': 'Network (ASN)',
+  'net.localTime': 'Local time there',
+  'net.lastDetection': 'Last location detection',
+  'net.reportedOk': 'Verified in the open window: pages report {tz} ({date}).',
+  'net.reportedBad': 'Pages in the open window report {tz}, but {expected} is expected. Reload the page or reopen the profile.',
+  'loc.subtitle': 'Proxy, public IP, location and time zone of every profile — each checked through its own proxy.',
+  'loc.info':
+    'A check asks an IP service through the profile’s own proxy (never this PC’s connection). The location of an IP is reused while the exit IP stays the same (up to 24 hours); “Refresh IP & location” always asks again. Different proxies can legitimately show the same location or time zone.',
+  'loc.refreshAll': 'Refresh all',
+  'loc.refresh': 'Refresh',
+  'loc.col.proxy': 'Proxy & connection',
+  'loc.col.ip': 'Public IP',
+  'loc.col.location': 'Country, region & city',
+  'loc.col.isp': 'ISP / organization',
+  'loc.col.timezone': 'Time zone & local time',
+  'loc.col.checked': 'Last detection',
+  'loc.was': 'was {ip}',
+  'loc.sharedIp': 'Same IP as another profile',
+  'loc.cityUnknown': 'City unknown',
+  'loc.lookupFailed': 'Location lookup failed',
+  'loc.reportedBad': 'Pages report {tz}',
+  'loc.ipChecked': 'IP checked {date}',
 } as const
 
 export type TKey = keyof typeof en
@@ -605,7 +623,7 @@ const bn: Record<TKey, string> = {
   'nav.profiles': 'প্রোফাইল',
   'nav.groups': 'গ্রুপ ও ট্যাগ',
   'nav.templates': 'টেমপ্লেট',
-  'nav.proxies': 'প্রক্সি সেটিংস',
+  'nav.proxies': 'প্রক্সি ও অবস্থান',
   'nav.backup': 'ব্যাকআপ ও রিস্টোর',
   'nav.settings': 'সেটিংস',
 
@@ -865,15 +883,7 @@ const bn: Record<TKey, string> = {
   'proxyResult.checkedWith': 'যাচাইয়ের সার্ভিস',
   'proxyResult.tested': 'পরীক্ষার সময়',
 
-  'proxyPage.subtitle':
-    'প্রতিটি প্রোফাইল নিজস্ব HTTP, HTTPS, SOCKS4 বা SOCKS5 প্রক্সি ব্যবহার করতে পারে। পরিবর্তন খোলা উইন্ডোতে সাথে সাথে কার্যকর হয়।',
-  'proxyPage.info':
-    'পাসওয়ার্ড আপনার ইউজার অ্যাকাউন্টের জন্য উইন্ডোজ ডেটা সুরক্ষা দিয়ে এনক্রিপ্ট করা থাকে, আর কখনো দেখানো বা লগে লেখা হয় না। ব্যাকআপে পাসওয়ার্ড থাকে না।',
   'proxyPage.empty': 'আগে একটি প্রোফাইল তৈরি করুন, তারপর এখানে প্রক্সি দিন।',
-  'proxyPage.col.auth': 'অথেন্টিকেশন',
-  'proxyPage.col.bypass': 'বাইপাস',
-  'proxyPage.authSaved': 'ইউজারনেম ও পাসওয়ার্ড সংরক্ষিত',
-  'proxyPage.test': 'পরীক্ষা',
   'proxyPage.configure': 'কনফিগার',
   'proxyPage.modalTitle': '{name} এর প্রক্সি',
 
@@ -952,7 +962,6 @@ const bn: Record<TKey, string> = {
   'details.noBackups': 'এই প্রোফাইলের এখনো কোনো ব্যাকআপ নেই।',
   'details.saved': 'ব্রাউজার সেটিংস সংরক্ষিত হয়েছে',
 
-  'net.checkNow': 'এখন যাচাই করুন',
   'net.checking': 'যাচাই হচ্ছে…',
   'net.proxyConnection': 'প্রক্সি সংযোগ',
   'net.ipVerification': 'আইপির অবস্থান খোঁজা',
@@ -1176,6 +1185,33 @@ const bn: Record<TKey, string> = {
   'settings.pressureNote': 'কিছুই স্বয়ংক্রিয়ভাবে বন্ধ হয় না। পিসি ধীর হলে নিজে প্রোফাইল উইন্ডো বন্ধ করুন।',
 
   'wizard.allowShared': 'আমি বুঝেছি এই সব প্রোফাইল একই প্রক্সি ব্যবহার করবে (আলাদা প্রক্সি বাধ্যতামূলক চালু আছে)।',
+  'net.refresh': 'আইপি ও অবস্থান রিফ্রেশ',
+  'net.previousIp': 'আগের আইপি',
+  'net.ipChanged': '{date} বদলেছে',
+  'net.isp': 'আইএসপি',
+  'net.org': 'প্রতিষ্ঠান',
+  'net.asn': 'নেটওয়ার্ক (ASN)',
+  'net.localTime': 'সেখানকার স্থানীয় সময়',
+  'net.lastDetection': 'শেষ অবস্থান শনাক্তকরণ',
+  'net.reportedOk': 'খোলা উইন্ডোতে যাচাই করা হয়েছে: পেজগুলো {tz} দেখাচ্ছে ({date})।',
+  'net.reportedBad': 'খোলা উইন্ডোর পেজগুলো {tz} দেখাচ্ছে, কিন্তু {expected} হওয়ার কথা। পেজ রিলোড করুন বা প্রোফাইল আবার খুলুন।',
+  'loc.subtitle': 'প্রতিটি প্রোফাইলের প্রক্সি, পাবলিক আইপি, অবস্থান ও টাইম জোন — প্রতিটি নিজের প্রক্সির মাধ্যমে যাচাই করা।',
+  'loc.info':
+    'যাচাই প্রোফাইলের নিজস্ব প্রক্সির মাধ্যমে (কখনো এই পিসির সংযোগ দিয়ে নয়) একটি আইপি সেবায় অনুরোধ পাঠায়। এক্সিট আইপি একই থাকলে অবস্থান আবার ব্যবহার হয় (২৪ ঘণ্টা পর্যন্ত); “আইপি ও অবস্থান রিফ্রেশ” সবসময় নতুন করে খোঁজে। আলাদা প্রক্সিও বৈধভাবে একই অবস্থান বা টাইম জোন দেখাতে পারে।',
+  'loc.refreshAll': 'সব রিফ্রেশ',
+  'loc.refresh': 'রিফ্রেশ',
+  'loc.col.proxy': 'প্রক্সি ও সংযোগ',
+  'loc.col.ip': 'পাবলিক আইপি',
+  'loc.col.location': 'দেশ, অঞ্চল ও শহর',
+  'loc.col.isp': 'আইএসপি / প্রতিষ্ঠান',
+  'loc.col.timezone': 'টাইম জোন ও স্থানীয় সময়',
+  'loc.col.checked': 'শেষ শনাক্তকরণ',
+  'loc.was': 'আগে ছিল {ip}',
+  'loc.sharedIp': 'অন্য প্রোফাইলের মতো একই আইপি',
+  'loc.cityUnknown': 'শহর অজানা',
+  'loc.lookupFailed': 'অবস্থান খোঁজা ব্যর্থ',
+  'loc.reportedBad': 'পেজগুলো {tz} দেখাচ্ছে',
+  'loc.ipChecked': 'আইপি যাচাই {date}',
 }
 
 export const DICTIONARIES: Record<UiLanguage, Record<TKey, string>> = { en, bn }

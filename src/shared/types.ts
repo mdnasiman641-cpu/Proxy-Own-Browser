@@ -366,6 +366,12 @@ export interface IpGeolocation {
   longitude: number | null
   /** IANA time zone, e.g. Asia/Dhaka. */
   timezone: string | null
+  /** Internet provider of the IP, when the service reports it. */
+  isp: string | null
+  /** Organization the IP is registered to, when reported. */
+  org: string | null
+  /** Autonomous system, e.g. "AS13335", when reported. */
+  asn: string | null
   /** Host name of the service that answered. */
   provider: string
 }
@@ -400,6 +406,24 @@ export interface ProfileNetworkStatus {
   lastValidTimezoneCurrent: boolean
   /** Other profiles whose latest check saw the same public IP. */
   sameExitIpAs: { id: string; name: string }[]
+  /** When the location was last looked up (it is reused while the exit IP stays the same). */
+  geoCheckedAt: string | null
+  /** True when this check reused the stored location because the exit IP had not changed. */
+  geoReused: boolean
+  /** The exit IP seen before the current one, and when the change was noticed (rotating proxies). */
+  previousIp: string | null
+  ipChangedAt: string | null
+}
+
+/** Time zone that JavaScript in an open profile window actually reported. */
+export interface BrowserTimezoneReport {
+  profileId: string
+  /** `Intl.DateTimeFormat().resolvedOptions().timeZone` read from the active page. */
+  reported: string
+  /** What the profile is set to apply (null = this PC's time zone). */
+  expected: string | null
+  matches: boolean
+  checkedAt: string
 }
 
 /** A profile whose proxy endpoint matches another profile's. */

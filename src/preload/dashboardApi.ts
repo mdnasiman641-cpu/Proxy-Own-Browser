@@ -47,6 +47,7 @@ export const dashboardApi: DashboardApi = {
   checkNetwork: (id) => ipcRenderer.invoke(C.checkNetwork, id),
   networkStatuses: () => ipcRenderer.invoke(C.networkStatuses),
   runtimeInfo: () => ipcRenderer.invoke(C.runtimeInfo),
+  reportedTimezones: () => ipcRenderer.invoke(C.reportedTimezones),
   chooseBackupFolder: () => ipcRenderer.invoke(C.chooseBackupFolder),
   openBackupFolder: () => ipcRenderer.invoke(C.openBackupFolder),
   backupMetadata: (ids) => ipcRenderer.invoke(C.backupMetadata, ids),

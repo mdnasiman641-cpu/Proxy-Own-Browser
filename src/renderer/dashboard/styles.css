@@ -598,3 +598,16 @@ kbd {
 @media (max-width: 1500px) {
   .profiles-table .row-actions .btn-text { display: none; }
 }
+
+/* Proxy, IP & location page */
+.location-table td { vertical-align: top; }
+.location-table .profile-name { max-width: 180px; }
+.status-pill.state-pill-ok { background: var(--success-soft); color: var(--success); }
+.status-pill.state-pill-failed { background: var(--danger-soft); color: var(--danger); }
+.local-time { font-variant-numeric: tabular-nums; }
+@media (max-width: 1300px) {
+  .location-table th:nth-child(5), .location-table td:nth-child(5) { display: none; }
+}
+@media (max-width: 1500px) {
+  .location-table .row-actions .btn-text { display: none; }
+}

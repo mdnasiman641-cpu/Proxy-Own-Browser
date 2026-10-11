@@ -14,6 +14,7 @@ import type {
   Profile,
   ProfileResourceUsage,
   ProfileRuntimeStatus,
+  BrowserTimezoneReport,
   ResourceUsage,
   TabState
 } from '@shared/types'
@@ -71,6 +72,8 @@ export interface ProfileWindow {
   timezoneLabel: string | null
   /** Non-blocking warning shown in the toolbar (e.g. time zone could not be refreshed). */
   notice: string | null
+  /** Time zone the window's pages actually reported (checked after each page load). */
+  reportedTimezone: BrowserTimezoneReport | null
 }
 
 export interface ProfileWindowDeps {
@@ -88,7 +91,21 @@ export interface ProfileWindowDeps {
   planLaunch?: (profileId: string) => Promise<LaunchPlan>
   /** Resource-pressure check for the resource panel. */
   pressure?: (appMemoryMb: number) => ResourceUsage['pressure']
+  /** Called when a window's pages reported their time zone (see reportedTimezones). */
+  onTimezoneReport?: (profileId: string) => void
 }
+
+/** Canonical IANA name, so aliases (Asia/Calcutta vs Asia/Kolkata) compare equal. */
+function canonicalZone(zone: string): string {
+  try {
+    return new Intl.DateTimeFormat('en-US', { timeZone: zone }).resolvedOptions().timeZone
+  } catch {
+    return zone
+  }
+}
+
+/** Read in an isolated world, so page scripts cannot change what is reported. */
+const REPORTED_TZ_WORLD = 1001
 
 function emulationOf(profile: Profile, plan: Pick<LaunchPlan, 'timezone' | 'locale'>): PageEmulation {
   return {
@@ -293,6 +310,47 @@ export class ProfileWindowManager {
     )
   }
 
+  /** What the pages of each open window reported as their time zone. */
+  reportedTimezones(): Record<string, BrowserTimezoneReport> {
+    const result: Record<string, BrowserTimezoneReport> = {}
+    for (const [id, entry] of this.windows) {
+      if (entry.reportedTimezone && !entry.window.isDestroyed()) result[id] = entry.reportedTimezone
+    }
+    return result
+  }
+
+  /**
+   * Reads `Intl.DateTimeFormat().resolvedOptions().timeZone` from a loaded page and compares it
+   * with the time zone the profile should have. A mismatch is logged and shown in the toolbar.
+   */
+  private async verifyTimezone(entry: ProfileWindow, tab: Tab): Promise<void> {
+    const contents = tab.view.webContents
+    if (contents.isDestroyed() || !/^https?:/i.test(contents.getURL())) return
+    let reported: unknown
+    try {
+      reported = await contents.executeJavaScriptInIsolatedWorld(REPORTED_TZ_WORLD, [
+        { code: 'Intl.DateTimeFormat().resolvedOptions().timeZone' }
+      ])
+    } catch {
+      return
+    }
+    if (typeof reported !== 'string' || entry.window.isDestroyed()) return
+    const expected = entry.emulation.timezone
+    const target = expected ?? Intl.DateTimeFormat().resolvedOptions().timeZone
+    const matches = canonicalZone(reported) === canonicalZone(target)
+    const previous = entry.reportedTimezone
+    entry.reportedTimezone = { profileId: entry.profile.id, reported, expected, matches, checkedAt: new Date().toISOString() }
+    if (!matches) {
+      this.deps.logger.warn(`Profile ${entry.profile.id}: pages report time zone ${reported}, expected ${target}`)
+      entry.notice = `Pages report the time zone ${reported}, not ${target}. Reload the page; if it stays wrong, close and reopen the profile.`
+      this.pushState(entry)
+    } else if (entry.notice?.startsWith('Pages report the time zone')) {
+      entry.notice = null
+      this.pushState(entry)
+    }
+    if (previous?.reported !== reported || previous?.matches !== matches) this.deps.onTimezoneReport?.(entry.profile.id)
+  }
+
   /** Current emulation of an open window (for tests and the details panel). */
   emulationFor(profileId: string): PageEmulation | null {
     return this.windows.get(profileId)?.emulation ?? null
@@ -429,7 +487,8 @@ export class ProfileWindowManager {
       toolbarReloads: 0,
       emulation: emulationOf(profile, plan),
       timezoneLabel: timezoneLabel(plan),
-      notice: plan.warnings[0] ?? null
+      notice: plan.warnings[0] ?? null,
+      reportedTimezone: null
     }
     this.windows.set(profileId, entry)
     this.deps.onOpenProfilesChanged(this.openIds())
@@ -635,6 +694,7 @@ export class ProfileWindowManager {
       push()
     })
     contents.on('did-stop-loading', push)
+    contents.on('did-finish-load', () => void this.verifyTimezone(entry, tab))
     contents.on('did-navigate', push)
     contents.on('did-navigate-in-page', push)
     contents.on('page-title-updated', push)

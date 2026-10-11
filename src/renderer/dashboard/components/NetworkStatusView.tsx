@@ -1,7 +1,8 @@
 import { describeProxy } from '@shared/proxy'
-import type { Profile, ProfileNetworkStatus } from '@shared/types'
+import type { BrowserTimezoneReport, Profile, ProfileNetworkStatus } from '@shared/types'
 import { Icon } from '../../common/Icon'
 import { useI18n } from '../i18n'
+import { LocalTime } from './LocalTime'
 import type { TKey } from '../strings'
 
 /** Compact proxy/IP line for the profile list. Shows nothing until the profile was checked. */
@@ -39,13 +40,15 @@ interface PanelProps {
   checking: boolean
   onCheck: () => void
   geoEnabled: boolean
+  /** What the open window's pages reported, if the profile is open. */
+  reported?: BrowserTimezoneReport | undefined
 }
 
 /**
  * Proxy connectivity and public-IP location, shown separately: a working proxy does not imply
  * a successful location lookup. Missing values are shown as unknown, never guessed.
  */
-export function NetworkPanel({ profile, status, checking, onCheck, geoEnabled }: PanelProps) {
+export function NetworkPanel({ profile, status, checking, onCheck, geoEnabled, reported }: PanelProps) {
   const { t, formatDate } = useI18n()
   const unknown = <span className="muted">{t('net.unknown')}</span>
   const geo = status?.geo.data ?? null
@@ -58,7 +61,7 @@ export function NetworkPanel({ profile, status, checking, onCheck, geoEnabled }:
       <div className="panel-head">
         <h2>{t('details.network')}</h2>
         <button type="button" className="button small primary" onClick={onCheck} disabled={checking}>
-          <Icon name="reload" size={16} /> {checking ? t('net.checking') : t('net.checkNow')}
+          <Icon name="reload" size={16} /> {checking ? t('net.checking') : t('net.refresh')}
         </button>
       </div>
       {status && !status.current && <div className="alert info">{t('net.staleNotice')}</div>}
@@ -78,7 +81,16 @@ export function NetworkPanel({ profile, status, checking, onCheck, geoEnabled }:
             <dt>{t('net.assigned')}</dt>
             <dd>{describeProxy(profile.proxy) ?? t('common.directConnection')}</dd>
             <dt>{t('net.publicIp')}</dt>
-            <dd className="mono">{status?.ip ?? unknown}</dd>
+            <dd className="mono" data-testid="public-ip">{status?.ip ?? unknown}</dd>
+            {status?.previousIp && (
+              <>
+                <dt>{t('net.previousIp')}</dt>
+                <dd>
+                  <span className="mono">{status.previousIp}</span>{' '}
+                  <span className="muted small">{t('net.ipChanged', { date: formatDate(status.ipChangedAt) })}</span>
+                </dd>
+              </>
+            )}
             <dt>{t('net.checkedAt')}</dt>
             <dd>{status ? formatDate(status.checkedAt) : t('net.never')}</dd>
           </dl>
@@ -96,10 +108,30 @@ export function NetworkPanel({ profile, status, checking, onCheck, geoEnabled }:
             <dd>{geo?.region ?? unknown}</dd>
             <dt>{t('net.city')}</dt>
             <dd>{geo?.city ?? unknown}</dd>
+            <dt>{t('net.isp')}</dt>
+            <dd>{geo?.isp ?? geo?.org ?? unknown}</dd>
+            {geo?.org && geo.org !== geo.isp && (
+              <>
+                <dt>{t('net.org')}</dt>
+                <dd>{geo.org}</dd>
+              </>
+            )}
+            {geo?.asn && (
+              <>
+                <dt>{t('net.asn')}</dt>
+                <dd className="mono">{geo.asn}</dd>
+              </>
+            )}
             <dt>{t('net.coordinates')}</dt>
             <dd>{geo && geo.latitude !== null && geo.longitude !== null ? t('net.approx', { lat: geo.latitude.toFixed(2), lon: geo.longitude.toFixed(2) }) : unknown}</dd>
             <dt>{t('net.detectedTz')}</dt>
-            <dd>{geo?.timezone ?? unknown}</dd>
+            <dd data-testid="detected-tz">{geo?.timezone ?? unknown}</dd>
+            <dt>{t('net.localTime')}</dt>
+            <dd>
+              <LocalTime timeZone={geo?.timezone} />
+            </dd>
+            <dt>{t('net.lastDetection')}</dt>
+            <dd>{status?.geoCheckedAt ? formatDate(status.geoCheckedAt) : t('net.never')}</dd>
             <dt>{t('net.provider')}</dt>
             <dd>{geo?.provider ?? unknown}</dd>
           </dl>
@@ -107,6 +139,13 @@ export function NetworkPanel({ profile, status, checking, onCheck, geoEnabled }:
           {!geoEnabled && <p className="small muted">{t('net.geoOff')}</p>}
         </section>
       </div>
+      {reported && (
+        <div className={`alert ${reported.matches ? 'success' : 'error'} small`} data-testid="reported-tz">
+          {reported.matches
+            ? t('net.reportedOk', { tz: reported.reported, date: formatDate(reported.checkedAt) })
+            : t('net.reportedBad', { tz: reported.reported, expected: reported.expected ?? t('browser.tz.off') })}
+        </div>
+      )}
       {status?.lastValidTimezone && (
         <p className="small">
           {t('net.lastValid', { tz: status.lastValidTimezone, date: formatDate(status.lastValidTimezoneAt) })}{' '}

@@ -179,9 +179,14 @@ export class ProfileService {
     }
     if (data.proxy) this.applyProxy(record, data.proxy)
     else if (proxySource) copyProxy(proxySource, record)
-    record.browserConfig = JSON.stringify(
-      this.resolveBrowserConfig(options.baseBrowserConfig ?? DEFAULT_BROWSER_CONFIG, data.browser)
-    )
+    // A new profile with a proxy uses the automatic, proxy-based time zone unless a time zone
+    // mode was chosen (or comes from the profile being duplicated/restored).
+    const base =
+      options.baseBrowserConfig ??
+      (record.proxyHost && data.browser?.timezoneMode === undefined
+        ? { ...DEFAULT_BROWSER_CONFIG, timezoneMode: 'auto' as const }
+        : DEFAULT_BROWSER_CONFIG)
+    record.browserConfig = JSON.stringify(this.resolveBrowserConfig(base, data.browser))
     this.assertProxyAllowed(record, options.allowSharedProxy)
     // Profile row and its tags are written together, or not at all.
     this.repo.transaction(() => {
@@ -195,6 +200,7 @@ export class ProfileService {
     const record = this.getRecord(id)
     const data = parseOrThrow(profileUpdateSchema, update)
     const endpointBefore = proxyEndpointKey(toProfile(record).proxy)
+    const hadProxy = record.proxyHost !== null
 
     if (data.name !== undefined) {
       if (this.repo.isNameTaken(data.name, record.id)) {
@@ -212,6 +218,14 @@ export class ProfileService {
       record.browserConfig = JSON.stringify(
         this.resolveBrowserConfig(parseStoredBrowserConfig(record.browserConfig), data.browser)
       )
+    }
+    // When a proxy is configured for the first time, the time zone follows it automatically
+    // (unless the user set a time zone mode in this same change or uses a manual time zone).
+    if (!hadProxy && record.proxyHost !== null && data.browser?.timezoneMode === undefined) {
+      const current = parseStoredBrowserConfig(record.browserConfig)
+      if (current.timezoneMode === 'off') {
+        record.browserConfig = JSON.stringify({ ...current, timezoneMode: 'auto' })
+      }
     }
     // Only a change of endpoint is checked, so editing other fields never fails because of an
     // overlap the user already accepted.

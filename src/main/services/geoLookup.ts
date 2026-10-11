@@ -66,6 +66,15 @@ export function parseGeoResponse(
       : text(json.timezone, 64)
   const timezone = tzRaw && isValidTimeZone(tzRaw) ? tzRaw : null
 
+  const connection = (format === 'ipwhois' ? json.connection : null) as Record<string, unknown> | null | undefined
+  const asnRaw = format === 'ipwhois' ? connection?.asn : json.asn
+  const asn =
+    typeof asnRaw === 'number' && Number.isInteger(asnRaw) && asnRaw > 0
+      ? `AS${asnRaw}`
+      : typeof asnRaw === 'string' && /^(AS)?\d{1,10}$/i.test(asnRaw.trim())
+        ? `AS${asnRaw.trim().replace(/^AS/i, '')}`
+        : null
+
   const data: IpGeolocation = {
     ip,
     country: text(format === 'ipwhois' ? json.country : json.country_name),
@@ -75,6 +84,9 @@ export function parseGeoResponse(
     latitude: num(json.latitude, -90, 90),
     longitude: num(json.longitude, -180, 180),
     timezone,
+    isp: text(format === 'ipwhois' ? connection?.isp : null, 120),
+    org: text(format === 'ipwhois' ? connection?.org : json.org, 120),
+    asn,
     provider
   }
   return { data, reason: null }
@@ -130,7 +142,11 @@ export async function runGeoLookup(options: {
       lastReason = `${host}: ${reason}`
     } catch (error) {
       const code = error instanceof FetchError ? error.code : 'ERR_FAILED'
-      lastReason = `${host}: ${classifyNetworkError(code).message}`
+      const classified = classifyNetworkError(code)
+      lastReason =
+        classified.status === 'timeout'
+          ? `${host} did not answer in time`
+          : `${host}: ${classified.message}`
     }
   }
   return { status: 'failed', message: `IP location lookup failed — ${lastReason}`, data: null }

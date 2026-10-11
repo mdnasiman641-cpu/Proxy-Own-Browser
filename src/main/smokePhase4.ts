@@ -2,6 +2,7 @@ import { readFileSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { app, type WebContents } from 'electron'
 import type { DuplicateResult, FullBackupOutcome, ProfileNetworkStatus, RuntimeInfo } from '@shared/types'
+import { locationChecks } from './smokeLocation'
 import {
   httpJson,
   pageHas,
@@ -155,7 +156,7 @@ export async function phase4SetupChecks(ctx: SmokeContext, check: Check, f: Fixt
   // ---- same exit IP warning ----
   const sibling = ctx.profiles.create({
     name: 'Smoke same exit',
-    proxy: { enabled: true, protocol: 'http', host: '127.0.0.1', port: f.openProxyPort, bypassRules: '<-loopback>' }
+    proxy: { enabled: true, protocol: 'http', host: '127.0.0.1', port: f.sameExitProxyPort, bypassRules: '<-loopback>' }
   })
   const siblingStatus = await viaDashboard<ProfileNetworkStatus>(ctx, `window.pob.checkNetwork(${JSON.stringify(sibling.id)})`)
   check(
@@ -261,6 +262,8 @@ export async function phase4SetupChecks(ctx: SmokeContext, check: Check, f: Fixt
     settingsOnly.data === 'not-requested' && (await readCookie(ctx, settingsOnly.profile.partition)).length === 0
   )
   ctx.profiles.delete(settingsOnly.profile.id)
+
+  await locationChecks(ctx, check, f, proxied.id)
 
   // ---- dashboard pages for the new features render (the UI is in Bangla at this point) ----
   const dash = ctx.getDashboard()!.webContents

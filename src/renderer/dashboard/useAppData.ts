@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useState } from 'react'
 import type {
   AppSettings,
+  BrowserTimezoneReport,
   Profile,
   ProfileGroup,
   ProfileInput,
@@ -33,6 +34,7 @@ export function useAppData() {
   const [statuses, setStatuses] = useState<Record<string, ProfileRuntimeStatus>>({})
   const [settings, setSettings] = useState<AppSettings | null>(null)
   const [network, setNetwork] = useState<Record<string, ProfileNetworkStatus>>({})
+  const [reportedTimezones, setReportedTimezones] = useState<Record<string, BrowserTimezoneReport>>({})
   const [startupNotes, setStartupNotes] = useState<string[]>([])
   const [loading, setLoading] = useState(true)
   const [loadError, setLoadError] = useState<string | null>(null)
@@ -58,7 +60,12 @@ export function useAppData() {
   /** Stored proxy/IP status of every checked profile (no network requests are made here). */
   const refreshNetwork = useCallback(async () => {
     try {
-      setNetwork(await unwrap(window.pob.networkStatuses()))
+      const [stored, reported] = await Promise.all([
+        unwrap(window.pob.networkStatuses()),
+        unwrap(window.pob.reportedTimezones())
+      ])
+      setNetwork(stored)
+      setReportedTimezones(reported)
     } catch {
       /* shown as "not checked" */
     }
@@ -165,6 +172,7 @@ export function useAppData() {
     runningCount,
     settings,
     network,
+    reportedTimezones,
     refreshNetwork,
     startupNotes,
     dismissStartupNotes: () => setStartupNotes([]),

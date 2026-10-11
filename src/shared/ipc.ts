@@ -24,6 +24,7 @@ import type {
   TemplateInput,
   BackupFileInfo,
   BackupHistoryEntry,
+  BrowserTimezoneReport,
   BackupVerifyResult,
   DuplicateRequest,
   DuplicateResult,
@@ -82,6 +83,7 @@ export const DashboardChannels = {
   checkNetwork: 'network:check',
   networkStatuses: 'network:statuses',
   runtimeInfo: 'app:runtime-info',
+  reportedTimezones: 'network:reported-timezones',
   chooseBackupFolder: 'backups:choose-folder',
   openBackupFolder: 'backups:open-folder',
   backupMetadata: 'backups:metadata',
@@ -188,6 +190,8 @@ export interface DashboardApi {
   checkNetwork(id: string): Promise<IpcResult<ProfileNetworkStatus>>
   networkStatuses(): Promise<IpcResult<Record<string, ProfileNetworkStatus>>>
   runtimeInfo(): Promise<IpcResult<RuntimeInfo>>
+  /** Time zones reported by the pages of open profile windows (read inside each window). */
+  reportedTimezones(): Promise<IpcResult<Record<string, BrowserTimezoneReport>>>
 
   chooseBackupFolder(): Promise<IpcResult<AppSettings | null>>
   openBackupFolder(): Promise<IpcResult<void>>

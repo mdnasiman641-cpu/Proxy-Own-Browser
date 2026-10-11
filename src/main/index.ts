@@ -132,6 +132,7 @@ async function start(): Promise<void> {
       broadcast(Events.networkStatusChanged, profileId)
       return plan
     },
+    onTimezoneReport: (profileId) => broadcast(Events.networkStatusChanged, profileId),
     pressure: (appMemoryMb) =>
       assessPressure({
         totalMemoryMb: totalmem() / 1048576,
