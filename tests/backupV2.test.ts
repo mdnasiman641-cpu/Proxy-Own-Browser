@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { BACKUP_FORMAT, parseBackup } from '../src/main/services/backupService'
+import { BACKUP_FORMAT, backupDigest, parseBackup } from '../src/main/services/backupService'
 import { createApp } from './helpers'
 
 async function populated() {
@@ -24,7 +24,7 @@ describe('metadata backup v2', () => {
     const app = await populated()
     const backup = app.backups.buildBackup('0.3.0')
     const text = JSON.stringify(backup)
-    expect(backup).toMatchObject({ format: BACKUP_FORMAT, version: 2, kind: 'metadata' })
+    expect(backup).toMatchObject({ format: BACKUP_FORMAT, version: 3, kind: 'metadata' })
     expect(backup.profiles.map((p) => p.id)).toEqual([app.src.id, app.plain.id])
     expect(backup.groups.map((g) => g.name)).toEqual(['Shops', 'Unused'])
     expect(backup.tags).toEqual(['bd', 'fb'])
@@ -50,7 +50,7 @@ describe('metadata backup v2', () => {
     const text = JSON.stringify(source.backups.buildBackup('0.3.0'), null, 2)
     const target = await createApp()
     const summary = target.backups.restore(parseBackup(text))
-    expect(summary).toMatchObject({ version: 2, imported: 2, skipped: 0, groupsCreated: 2, groupsMerged: 0, templatesImported: 1 })
+    expect(summary).toMatchObject({ version: 3, imported: 2, skipped: 0, groupsCreated: 2, groupsMerged: 0, templatesImported: 1 })
 
     const restored = target.service.get(source.src.id)
     expect(restored).toMatchObject({ name: 'Main shop', groupId: source.shops.id, tags: ['bd', 'fb'] })
@@ -109,9 +109,41 @@ describe('metadata backup v2', () => {
     const duplicateIds = JSON.parse(text)
     duplicateIds.profiles[1].id = duplicateIds.profiles[0].id
     expect(() => parseBackup(JSON.stringify(duplicateIds))).toThrow(/damaged/)
-    expect(() => parseBackup(JSON.stringify({ ...good, version: 3 }))).toThrow(/newer version/)
+    expect(() => parseBackup(JSON.stringify({ ...good, version: 4 }))).toThrow(/newer version/)
     expect(() => parseBackup(JSON.stringify({ format: 'zip', version: 2 }))).toThrow(/not a Proxy Own Browser backup/)
     expect(() => parseBackup(JSON.stringify({ ...good, integrity: { algorithm: 'md5', digest: 'x' } }))).toThrow(/damaged/)
+  })
+
+  it('still restores Phase 3 (v2) backups, which have no browser settings', async () => {
+    const source = await populated()
+    const v3 = source.backups.buildBackup('0.3.0') as unknown as Record<string, unknown>
+    // Rebuild the same content exactly as a v2 file was written (no schemaVersion/browser/createdAt).
+    const { integrity: _i, schemaVersion: _s, ...rest } = v3
+    const body = {
+      ...rest,
+      version: 2,
+      profiles: (rest.profiles as Record<string, unknown>[]).map(({ browser: _b, createdAt: _c, ...p }) => p)
+    }
+    const v2 = { ...body, integrity: { algorithm: 'sha256', digest: backupDigest(body) } }
+    const target = await createApp()
+    const summary = target.backups.restore(parseBackup(JSON.stringify(v2)))
+    expect(summary).toMatchObject({ version: 2, imported: 2, skipped: 0 })
+    expect(target.service.get(source.src.id).browser.timezoneMode).toBe('off')
+  })
+
+  it('v3 carries browser settings and creation dates, but not the backup folder', async () => {
+    const app = await populated()
+    app.service.update(app.src.id, { browser: { timezoneMode: 'manual', timezoneManual: 'Asia/Dhaka', language: 'bn-BD', zoomPercent: 125 } })
+    app.settings.update({ backupFolder: 'C:\\Users\\me\\Backups' })
+    const backup = app.backups.buildBackup('0.4.0')
+    expect(backup.schemaVersion).toBe(3)
+    expect(JSON.stringify(backup.settings)).not.toContain('Backups')
+    expect(backup.profiles[0]).toMatchObject({ createdAt: app.src.createdAt, browser: { timezoneManual: 'Asia/Dhaka', zoomPercent: 125 } })
+
+    const target = await createApp()
+    target.backups.restore(parseBackup(JSON.stringify(backup)))
+    expect(target.service.get(app.src.id).browser).toMatchObject({ timezoneMode: 'manual', timezoneManual: 'Asia/Dhaka', language: 'bn-BD', zoomPercent: 125 })
+    expect(target.settings.get().backupFolder).toBeNull()
   })
 
   it('accepts a backup re-formatted with different whitespace', async () => {

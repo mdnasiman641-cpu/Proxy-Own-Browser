@@ -1,6 +1,7 @@
 import type { BackupImportResult, TemplateProxy } from '@shared/types'
 import { LIMITS } from '@shared/validation'
 import { createBackup, type BackupFile, type ParsedBackup } from './backupService'
+import { SCHEMA_VERSION } from './database'
 import { userMessage } from './bulkRunner'
 import type { CatalogService } from './catalogService'
 import type { ProfileService } from './profileService'
@@ -50,7 +51,7 @@ export class MetadataBackupService {
       this.settings.get(),
       appVersion,
       new Date(),
-      { groups, tags, templates }
+      { groups, tags, templates, schemaVersion: SCHEMA_VERSION }
     )
   }
 
@@ -108,7 +109,7 @@ export class MetadataBackupService {
                 }
               : undefined
           },
-          { preferredId: entry.id }
+          { preferredId: entry.id, baseBrowserConfig: entry.browser, allowSharedProxy: true }
         )
         if (entry.id) profileIds.set(entry.id, profile.id)
         if (name !== entry.name) renamed.push(`${entry.name} → ${name}`)
@@ -141,7 +142,7 @@ export class MetadataBackupService {
     }
 
     this.applySettings(backup)
-    return { imported, renamed, skipped, version: 2, groupsCreated, groupsMerged, templatesImported, warnings }
+    return { imported, renamed, skipped, version: backup.version, groupsCreated, groupsMerged, templatesImported, warnings }
   }
 
   private applySettings(backup: ParsedBackup): void {

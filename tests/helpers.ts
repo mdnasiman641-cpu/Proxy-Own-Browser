@@ -17,7 +17,13 @@ export async function openDb(filePath: string | null = null): Promise<AppDatabas
 }
 
 export async function createService(
-  options: { filePath?: string | null; cipher?: SecretCipher; newId?: () => string; maxProfiles?: number } = {}
+  options: {
+    filePath?: string | null
+    cipher?: SecretCipher
+    newId?: () => string
+    maxProfiles?: number
+    requireUniqueProxy?: () => boolean
+  } = {}
 ): Promise<{ db: AppDatabase; service: ProfileService; repo: ProfileRepository; catalog: CatalogService }> {
   const db = await openDb(options.filePath ?? null)
   const repo = new ProfileRepository(db)
@@ -25,7 +31,8 @@ export async function createService(
   const service = new ProfileService(repo, options.cipher ?? new EncodingOnlyCipher(), {
     newId: options.newId,
     maxProfiles: options.maxProfiles,
-    catalog
+    catalog,
+    requireUniqueProxy: options.requireUniqueProxy
   })
   return { db, service, repo, catalog }
 }

@@ -44,3 +44,20 @@ export async function removeManagedPartitionDir(userDataPath: string, partition:
 export function partitionsRoot(userDataPath: string): string {
   return join(resolve(userDataPath), PARTITIONS_DIR)
 }
+
+/**
+ * Working folders for backups/restores, inside `Partitions/` so that moving a verified
+ * restore into place is a rename on the same drive:
+ * - `.pob-work/staging/<id>`   extracted and verified data waiting to be moved in
+ * - `.pob-work/previous/...`   a profile's data as it was before an in-place restore
+ * - `.pob-work/journal/<id>.json` progress of a folder swap, for recovery after a crash
+ */
+export function workDir(userDataPath: string, kind: 'staging' | 'previous' | 'journal'): string {
+  return join(partitionsRoot(userDataPath), '.pob-work', kind)
+}
+
+/** A new, unique folder path under the work area (not created). Ids are validated. */
+export function workPath(userDataPath: string, kind: 'staging' | 'previous' | 'journal', name: string): string {
+  if (!/^[A-Za-z0-9._-]{1,120}$/.test(name) || name.includes('..')) throw new ValidationError('Invalid work folder name')
+  return join(workDir(userDataPath, kind), name)
+}

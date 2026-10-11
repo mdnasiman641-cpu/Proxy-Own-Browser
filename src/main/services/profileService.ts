@@ -58,6 +58,8 @@ export interface PortableProfile {
   tags?: string[]
   /** Browser settings (v3 backups). */
   browser?: BrowserConfig
+  /** When the profile was created (v3 backups; informational). */
+  createdAt?: string
 }
 
 /** Options available only to main-process code (never accepted from IPC directly). */
@@ -365,6 +367,7 @@ export class ProfileService {
       groupId: profile.groupId,
       tags: profile.tags,
       browser: profile.browser,
+      createdAt: profile.createdAt,
       name: profile.name,
       notes: profile.notes,
       color: profile.color,
