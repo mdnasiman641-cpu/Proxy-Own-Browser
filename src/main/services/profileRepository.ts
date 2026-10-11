@@ -16,6 +16,8 @@ export interface ProfileRecord {
   proxyPassword: string | null
   proxyBypass: string
   groupId: string | null
+  /** JSON-encoded BrowserConfig (validated when read). */
+  browserConfig: string
   createdAt: string
   updatedAt: string
   lastOpenedAt: string | null
@@ -35,13 +37,14 @@ interface ProfileRow {
   proxy_password: string | null
   proxy_bypass: string
   group_id: string | null
+  browser_config: string
   created_at: string
   updated_at: string
   last_opened_at: string | null
 }
 
 const COLUMNS = `id, name, notes, color, start_url, partition, proxy_protocol, proxy_host, proxy_port,
-  proxy_username, proxy_password, proxy_bypass, group_id, created_at, updated_at, last_opened_at`
+  proxy_username, proxy_password, proxy_bypass, group_id, browser_config, created_at, updated_at, last_opened_at`
 
 function fromRow(row: ProfileRow): ProfileRecord {
   return {
@@ -58,6 +61,7 @@ function fromRow(row: ProfileRow): ProfileRecord {
     proxyPassword: row.proxy_password,
     proxyBypass: row.proxy_bypass,
     groupId: row.group_id ?? null,
+    browserConfig: row.browser_config ?? '{}',
     createdAt: row.created_at,
     updatedAt: row.updated_at,
     lastOpenedAt: row.last_opened_at
@@ -126,7 +130,7 @@ export class ProfileRepository {
         record.createdAt
       ])
       this.db.run(
-        `INSERT INTO profiles (${COLUMNS}, name_key) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        `INSERT INTO profiles (${COLUMNS}, name_key) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
         [...toParams(record), nameKey(record.name)]
       )
     })
@@ -137,7 +141,7 @@ export class ProfileRepository {
       `UPDATE profiles SET
          name = ?, name_key = ?, notes = ?, color = ?, start_url = ?,
          proxy_protocol = ?, proxy_host = ?, proxy_port = ?, proxy_username = ?, proxy_password = ?,
-         proxy_bypass = ?, group_id = ?, updated_at = ?, last_opened_at = ?
+         proxy_bypass = ?, group_id = ?, browser_config = ?, updated_at = ?, last_opened_at = ?
        WHERE id = ?`,
       [
         record.name,
@@ -152,6 +156,7 @@ export class ProfileRepository {
         record.proxyPassword,
         record.proxyBypass,
         record.groupId,
+        record.browserConfig,
         record.updatedAt,
         record.lastOpenedAt,
         record.id
@@ -167,6 +172,8 @@ export class ProfileRepository {
   delete(id: string): boolean {
     return this.db.transaction(() => {
       this.db.run('DELETE FROM profile_tags WHERE profile_id = ?', [id])
+      this.db.run('DELETE FROM profile_network_status WHERE profile_id = ?', [id])
+      this.db.run("DELETE FROM jobs WHERE profile_id = ? AND status = 'pending'", [id])
       return this.db.run('DELETE FROM profiles WHERE id = ?', [id]) > 0
     })
   }
@@ -192,6 +199,7 @@ function toParams(r: ProfileRecord): (string | number | null)[] {
     r.proxyPassword,
     r.proxyBypass,
     r.groupId,
+    r.browserConfig,
     r.createdAt,
     r.updatedAt,
     r.lastOpenedAt

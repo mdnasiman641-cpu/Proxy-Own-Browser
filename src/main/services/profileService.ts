@@ -1,6 +1,23 @@
 import { randomUUID } from 'node:crypto'
+import {
+  DEFAULT_BROWSER_CONFIG,
+  browserConfigProblem,
+  mergeBrowserConfig,
+  parseStoredBrowserConfig,
+  type BrowserConfig
+} from '@shared/browserConfig'
 import { partitionForProfile } from '@shared/partition'
-import type { Profile, ProfileInput, ProfileUpdate, ProxyConfig, ProxyInput } from '@shared/types'
+import { describeProxy, proxyEndpointKey } from '@shared/proxy'
+import type {
+  DuplicateRequest,
+  Profile,
+  ProfileInput,
+  ProfileUpdate,
+  ProxyConflict,
+  ProxyConfig,
+  ProxyInput,
+  SaveProfileOptions
+} from '@shared/types'
 import {
   LIMITS,
   PROFILE_COLORS,
@@ -10,7 +27,9 @@ import {
   profileInputSchema,
   profileUpdateSchema,
   proxyInputSchema,
+  duplicateRequestSchema,
   searchQuerySchema,
+  type ParsedProfileUpdate,
   type ParsedProxyInput
 } from '@shared/validation'
 import type { CatalogService } from './catalogService'
@@ -37,6 +56,10 @@ export interface PortableProfile {
   proxy: Omit<ProxyConfig, 'hasPassword'> | null
   groupId?: string | null
   tags?: string[]
+  /** Browser settings (v3 backups). */
+  browser?: BrowserConfig
+  /** When the profile was created (v3 backups; informational). */
+  createdAt?: string
 }
 
 /** Options available only to main-process code (never accepted from IPC directly). */
@@ -45,6 +68,10 @@ export interface CreateOptions {
   preferredId?: string
   /** Copy the proxy settings, including the encrypted password, from this profile. */
   proxySourceProfileId?: string | null
+  /** The user confirmed that this profile may share a proxy endpoint with another profile. */
+  allowSharedProxy?: boolean
+  /** Start from these browser settings (duplicates and restores) before applying input.browser. */
+  baseBrowserConfig?: BrowserConfig
 }
 
 /** What a proxy test should connect through. Credentials stay in the main process. */
@@ -65,6 +92,8 @@ interface ProfileServiceOptions {
   maxProfiles?: number
   /** Groups and tags. Required for group/tag fields; tests may omit it. */
   catalog?: CatalogService
+  /** Whether the "Require unique proxy assignment" setting is on. */
+  requireUniqueProxy?: () => boolean
 }
 
 export class ProfileService {
@@ -72,6 +101,7 @@ export class ProfileService {
   private readonly newId: () => string
   private readonly maxProfiles: number
   private readonly catalog: CatalogService | undefined
+  private readonly requireUniqueProxy: () => boolean
 
   constructor(
     private readonly repo: ProfileRepository,
@@ -82,6 +112,7 @@ export class ProfileService {
     this.newId = options.newId ?? randomUUID
     this.maxProfiles = options.maxProfiles ?? LIMITS.maxProfiles
     this.catalog = options.catalog
+    this.requireUniqueProxy = options.requireUniqueProxy ?? (() => false)
   }
 
   list(query?: string): Profile[] {
@@ -141,12 +172,17 @@ export class ProfileService {
       proxyPassword: null,
       proxyBypass: '',
       groupId: data.groupId ?? null,
+      browserConfig: '{}',
       createdAt: timestamp,
       updatedAt: timestamp,
       lastOpenedAt: null
     }
     if (data.proxy) this.applyProxy(record, data.proxy)
     else if (proxySource) copyProxy(proxySource, record)
+    record.browserConfig = JSON.stringify(
+      this.resolveBrowserConfig(options.baseBrowserConfig ?? DEFAULT_BROWSER_CONFIG, data.browser)
+    )
+    this.assertProxyAllowed(record, options.allowSharedProxy)
     // Profile row and its tags are written together, or not at all.
     this.repo.transaction(() => {
       this.repo.insert(record)
@@ -155,9 +191,10 @@ export class ProfileService {
     return this.get(record.id)
   }
 
-  update(id: string, update: ProfileUpdate): Profile {
+  update(id: string, update: ProfileUpdate, options: SaveProfileOptions = {}): Profile {
     const record = this.getRecord(id)
     const data = parseOrThrow(profileUpdateSchema, update)
+    const endpointBefore = proxyEndpointKey(toProfile(record).proxy)
 
     if (data.name !== undefined) {
       if (this.repo.isNameTaken(data.name, record.id)) {
@@ -171,6 +208,16 @@ export class ProfileService {
     if (data.proxy) this.applyProxy(record, data.proxy)
     this.assertCatalogFields(data.groupId, data.tags)
     if (data.groupId !== undefined) record.groupId = data.groupId
+    if (data.browser !== undefined) {
+      record.browserConfig = JSON.stringify(
+        this.resolveBrowserConfig(parseStoredBrowserConfig(record.browserConfig), data.browser)
+      )
+    }
+    // Only a change of endpoint is checked, so editing other fields never fails because of an
+    // overlap the user already accepted.
+    if (proxyEndpointKey(toProfile(record).proxy) !== endpointBefore) {
+      this.assertProxyAllowed(record, options.allowSharedProxy)
+    }
 
     record.updatedAt = this.now().toISOString()
     this.repo.transaction(() => {
@@ -193,12 +240,64 @@ export class ProfileService {
   }
 
   /** Copies another profile's proxy settings (including the encrypted password) onto this one. */
-  copyProxyFrom(id: string, sourceId: string): Profile {
+  copyProxyFrom(id: string, sourceId: string, options: SaveProfileOptions = {}): Profile {
     const record = this.getRecord(id)
     copyProxy(this.proxySourceRecord(sourceId), record)
+    this.assertProxyAllowed(record, options.allowSharedProxy)
     record.updatedAt = this.now().toISOString()
     this.repo.update(record)
     return this.get(record.id)
+  }
+
+  /**
+   * Creates a copy of a profile's settings with a new id and its own new, empty session
+   * partition. Browser data is never shared; copying it is a separate, explicit step.
+   */
+  duplicate(sourceId: string, request: DuplicateRequest, options: SaveProfileOptions = {}): Profile {
+    const source = this.getRecord(sourceId)
+    const data = parseOrThrow(duplicateRequestSchema, request)
+    const profile = toProfile(source, this.catalog?.tagsForProfile(source.id) ?? [])
+    return this.create(
+      {
+        name: data.name,
+        notes: profile.notes,
+        color: profile.color,
+        startUrl: profile.startUrl,
+        groupId: profile.groupId,
+        tags: profile.tags
+      },
+      {
+        proxySourceProfileId: data.copyProxy && profile.proxy ? source.id : null,
+        baseBrowserConfig: profile.browser,
+        allowSharedProxy: options.allowSharedProxy
+      }
+    )
+  }
+
+  /** Profiles (other than `excludeId`) whose proxy endpoint equals `proxy`'s. */
+  findProxyConflicts(
+    proxy: Pick<ProxyConfig, 'host' | 'port' | 'username'> | null,
+    excludeId?: string | null
+  ): ProxyConflict[] {
+    if (!proxy) return []
+    const key = proxyEndpointKey(proxy)
+    return this.repo
+      .findAll()
+      .filter((r) => r.id !== excludeId)
+      .filter((r) => {
+        const p = toProfile(r).proxy
+        return p !== null && proxyEndpointKey(p) === key
+      })
+      .map((r) => ({ id: r.id, name: r.name }))
+  }
+
+  /** Stores browser settings coming from a backup (already validated by the backup parser). */
+  replaceBrowserConfig(id: string, config: BrowserConfig): Profile {
+    const record = this.getRecord(id)
+    record.browserConfig = JSON.stringify(parseStoredBrowserConfig(config))
+    record.updatedAt = this.now().toISOString()
+    this.repo.update(record)
+    return this.get(id)
   }
 
   /** Deletes a profile and returns it so the caller can clean up its session data. */
@@ -267,6 +366,8 @@ export class ProfileService {
       id: profile.id,
       groupId: profile.groupId,
       tags: profile.tags,
+      browser: profile.browser,
+      createdAt: profile.createdAt,
       name: profile.name,
       notes: profile.notes,
       color: profile.color,
@@ -322,6 +423,26 @@ export class ProfileService {
       if (!this.repo.isNameTaken(candidate)) return candidate
     }
     throw new ValidationError('Could not find a free profile name')
+  }
+
+  private resolveBrowserConfig(base: BrowserConfig, update: ParsedProfileUpdate['browser']): BrowserConfig {
+    const next = update ? mergeBrowserConfig(base, update) : base
+    const problem = browserConfigProblem(next)
+    if (problem) throw new ValidationError(problem)
+    return next
+  }
+
+  private assertProxyAllowed(record: ProfileRecord, allowShared: boolean | undefined): void {
+    if (allowShared || !this.requireUniqueProxy()) return
+    const proxy = toProfile(record).proxy
+    const conflicts = this.findProxyConflicts(proxy, record.id)
+    if (conflicts.length === 0) return
+    const names = conflicts.slice(0, 3).map((c) => `"${c.name}"`).join(', ')
+    const more = conflicts.length > 3 ? ` and ${conflicts.length - 3} more` : ''
+    throw new ValidationError(
+      `${describeProxy(proxy)} is already assigned to ${names}${more}. ` +
+        'Unique proxy assignment is on — choose another proxy or confirm that these profiles may share it.'
+    )
   }
 
   private getRecord(id: string): ProfileRecord {
@@ -427,6 +548,7 @@ export function toProfile(record: ProfileRecord, tags: string[] = []): Profile {
     proxy,
     groupId: record.groupId,
     tags,
+    browser: parseStoredBrowserConfig(record.browserConfig),
     createdAt: record.createdAt,
     updatedAt: record.updatedAt,
     lastOpenedAt: record.lastOpenedAt

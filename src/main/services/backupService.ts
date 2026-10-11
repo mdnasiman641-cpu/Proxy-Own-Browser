@@ -1,5 +1,6 @@
 import { createHash } from 'node:crypto'
 import { z } from 'zod'
+import { parseStoredBrowserConfig } from '@shared/browserConfig'
 import { PROXY_PROTOCOLS, type AppSettings, type ProfileTemplate } from '@shared/types'
 import {
   LIMITS,
@@ -10,9 +11,13 @@ import {
 import type { PortableProfile } from './profileService'
 
 export const BACKUP_FORMAT = 'proxy-own-browser-backup'
-/** Version written by this app. Version 1 files (Phase 1/2) can still be restored. */
-export const BACKUP_VERSION = 2
+/**
+ * Version written by this app. Version 3 adds each profile's browser settings and creation
+ * date; version 1 (Phase 1/2) and version 2 (Phase 3) files can still be restored.
+ */
+export const BACKUP_VERSION = 3
 export const MAX_BACKUP_BYTES = 5 * 1024 * 1024
+const DAMAGED = 'This backup file is damaged or was modified, so it was not restored'
 
 export interface PortableGroup {
   id: string
@@ -32,7 +37,10 @@ export interface BackupFile {
   kind: 'metadata'
   exportedAt: string
   appVersion: string
-  settings: AppSettings
+  /** Database schema version of the app that wrote the file. */
+  schemaVersion: number
+  /** App settings, without machine-specific values such as the backup folder. */
+  settings: Omit<AppSettings, 'backupFolder'>
   groups: PortableGroup[]
   tags: string[]
   profiles: PortableProfile[]
@@ -94,9 +102,28 @@ const v2TemplateSchema = z.object({
   proxy: templateProxySchema.default({ mode: 'none' })
 })
 
+const v3ProfileSchema = v2ProfileSchema.extend({
+  browser: z.unknown().optional(),
+  createdAt: z.string().max(40).optional()
+})
+
+/**
+ * Validates one profile's settings as stored inside a full backup's manifest. Throws a
+ * ValidationError when the data is not usable.
+ */
+export function parsePortableProfile(value: unknown): PortableProfile & { groupName?: string | null } {
+  const parsed = v3ProfileSchema
+    .extend({ groupName: z.string().min(1).max(LIMITS.groupNameMax).nullable().optional() })
+    .safeParse(value)
+  if (!parsed.success) throw new ValidationError(DAMAGED)
+  const { browser, ...rest } = parsed.data
+  return browser === undefined ? rest : { ...rest, browser: parseStoredBrowserConfig(browser) }
+}
+
 const v2Schema = z.object({
   format: z.literal(BACKUP_FORMAT),
-  version: z.literal(2),
+  version: z.union([z.literal(2), z.literal(3)]),
+  schemaVersion: z.number().int().min(0).optional(),
   kind: z.literal('metadata'),
   exportedAt: z.string(),
   appVersion: z.string().default('unknown'),
@@ -105,7 +132,7 @@ const v2Schema = z.object({
     .array(z.object({ id: z.string().regex(UUID), name: z.string().min(1).max(LIMITS.groupNameMax), color: z.string().regex(COLOR) }))
     .max(LIMITS.maxGroups),
   tags: z.array(z.string().min(1).max(LIMITS.tagMax)).max(LIMITS.maxTags),
-  profiles: z.array(v2ProfileSchema).max(LIMITS.maxProfiles),
+  profiles: z.array(v3ProfileSchema).max(LIMITS.maxProfiles),
   templates: z.array(v2TemplateSchema).max(LIMITS.maxTemplates),
   integrity: z.object({ algorithm: z.literal('sha256'), digest: z.string().regex(/^[0-9a-f]{64}$/) })
 })
@@ -122,15 +149,18 @@ export function createBackup(
   settings: AppSettings,
   appVersion: string,
   now: Date = new Date(),
-  extras: BackupExtras = {}
+  extras: BackupExtras & { schemaVersion?: number } = {}
 ): BackupFile {
+  // The backup folder is a path on this PC; it is not carried to other installs.
+  const { backupFolder: _folder, ...portableSettings } = settings
   const body = {
     format: BACKUP_FORMAT as typeof BACKUP_FORMAT,
     version: BACKUP_VERSION as typeof BACKUP_VERSION,
     kind: 'metadata' as const,
     exportedAt: now.toISOString(),
     appVersion,
-    settings,
+    schemaVersion: extras.schemaVersion ?? 0,
+    settings: portableSettings,
     groups: extras.groups ?? [],
     tags: extras.tags ?? [],
     profiles,
@@ -140,7 +170,9 @@ export function createBackup(
 }
 
 export interface ParsedBackup {
-  version: 1 | 2
+  version: 1 | 2 | 3
+  exportedAt?: string
+  appVersion?: string
   profiles: PortableProfile[]
   groups: PortableGroup[]
   tags: string[]
@@ -148,7 +180,6 @@ export interface ParsedBackup {
   settings: Partial<AppSettings>
 }
 
-const DAMAGED = 'This backup file is damaged or was modified, so it was not restored'
 
 export function parseBackup(text: string): ParsedBackup {
   if (Buffer.byteLength(text, 'utf8') > MAX_BACKUP_BYTES) {
@@ -195,8 +226,13 @@ export function parseBackup(text: string): ParsedBackup {
     throw new ValidationError(DAMAGED)
   }
   return {
-    version: 2,
-    profiles: v2.data.profiles,
+    version: v2.data.version,
+    exportedAt: v2.data.exportedAt,
+    appVersion: v2.data.appVersion,
+    // Browser settings are validated field by field; unknown or invalid values fall back to defaults.
+    profiles: v2.data.profiles.map(({ browser, ...p }) =>
+      browser === undefined ? p : { ...p, browser: parseStoredBrowserConfig(browser) }
+    ),
     groups: v2.data.groups,
     tags: v2.data.tags,
     templates: v2.data.templates,
@@ -206,6 +242,7 @@ export function parseBackup(text: string): ParsedBackup {
 
 /** Only settings that are still valid are restored. */
 function validSettings(raw: Record<string, unknown>): Partial<AppSettings> {
-  const settings = settingsUpdateSchema.safeParse(raw)
+  const { backupFolder: _folder, ...rest } = raw
+  const settings = settingsUpdateSchema.safeParse(rest)
   return settings.success ? (settings.data as Partial<AppSettings>) : {}
 }

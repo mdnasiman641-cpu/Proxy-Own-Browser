@@ -98,3 +98,17 @@ export function redactSecrets(text: string): string {
     .replace(/((?:password|passwd|pwd|secret|token)["']?\s*[:=]\s*["']?)[^"'\s,}&]+/gi, '$1***')
     .replace(/(proxy-authorization\s*:\s*)\S+(\s+\S+)?/gi, '$1***')
 }
+
+/**
+ * Normalized identity of a proxy endpoint, used to detect two profiles sharing one proxy and to
+ * tell whether a stored IP check still applies. Host is lower-cased (trailing dot removed),
+ * the protocol is ignored (one server, one endpoint), and the username is included because
+ * many providers hand out a different exit IP per username/session. Never contains a password.
+ */
+export function proxyEndpointKey(
+  proxy: Pick<ProxyConfig, 'host' | 'port'> & { username?: string | null } | null
+): string {
+  if (!proxy) return 'direct'
+  const host = proxy.host.trim().toLowerCase().replace(/\.$/, '').replace(/^\[|\]$/g, '')
+  return `${host}:${proxy.port}|${proxy.username ?? ''}`
+}

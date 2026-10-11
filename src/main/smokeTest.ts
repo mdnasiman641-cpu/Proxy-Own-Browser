@@ -1,100 +1,34 @@
 import { readFileSync, writeFileSync } from 'node:fs'
-import { get } from 'node:http'
 import { join } from 'node:path'
-import { app, type BrowserWindow, type WebContents } from 'electron'
+import { app } from 'electron'
 import type { ProxyTestResult } from '@shared/types'
-import type { Logger } from './services/logger'
-import type { BulkCreator } from './services/bulkCreate'
-import type { CatalogService } from './services/catalogService'
-import type { MetadataBackupService } from './services/metadataBackup'
-import type { ProfileService } from './services/profileService'
-import type { TemplateService } from './services/templateService'
-import type { ProfileWindowManager } from './electron/profileWindows'
 import { ProxyTester } from './electron/proxyTester'
-import type { SessionManager } from './electron/sessionManager'
+import {
+  COOKIE_NAME,
+  COOKIE_URL,
+  httpJson,
+  pageHas,
+  readCookie,
+  shellLanguage,
+  viaDashboard,
+  waitFor,
+  waitForLoad,
+  type Check,
+  type Fixtures,
+  type SmokeContext
+} from './smokeHelpers'
+import { phase4SetupChecks, phase4VerifyChecks } from './smokePhase4'
 
 /**
  * Automated end-to-end check run by `npm run smoke` (scripts/smoke-test.mjs) against an
  * isolated temporary data folder and local fixture servers. Inert unless POB_SMOKE_TEST is set.
  *
  *   stage "setup":  profiles, windows, duplicate opens, concurrency limit, tabs, crash recovery,
- *                   proxy tests (success / auth / timeout / unreachable), cookies
- *   stage "verify": after a full app restart, each profile restored only its own cookie
+ *                   proxy tests (success / auth / timeout / unreachable), cookies, profile
+ *                   manager, isolation, IP/location, time zone, language, backups (Phase 4)
+ *   stage "verify": after a full app restart: each profile restored only its own data,
+ *                   scheduled backups ran, full backup/restore and settings persisted
  */
-interface SmokeContext {
-  stage: string
-  resultFile: string
-  profiles: ProfileService
-  sessions: SessionManager
-  windows: ProfileWindowManager
-  proxyTester: ProxyTester
-  catalog: CatalogService
-  templates: TemplateService
-  bulkCreator: BulkCreator
-  backups: MetadataBackupService
-  getDashboard: () => BrowserWindow | null
-  logger: Logger
-}
-
-interface Fixtures {
-  echoBase: string
-  authProxyPort: number
-  openProxyPort: number
-  challengeProxyPort: number
-  blackholePort: number
-  closedPort: number
-  proxiedIp: string
-  user: string
-  pass: string
-}
-
-const COOKIE_URL = 'https://smoke-test.invalid/'
-const COOKIE_NAME = 'pob_smoke'
-const sleep = (ms: number): Promise<void> => new Promise((r) => setTimeout(r, ms))
-
-function waitForLoad(contents: WebContents, timeoutMs = 20_000): Promise<void> {
-  if (!contents.isLoading()) return Promise.resolve()
-  return new Promise((resolve, reject) => {
-    const timer = setTimeout(() => reject(new Error('Timed out waiting for page load')), timeoutMs)
-    contents.once('did-stop-loading', () => {
-      clearTimeout(timer)
-      resolve()
-    })
-  })
-}
-
-/** Polls until `predicate` is true (or the time runs out) and returns the final value. */
-async function waitFor(predicate: () => boolean | Promise<boolean>, timeoutMs = 10_000): Promise<boolean> {
-  const until = Date.now() + timeoutMs
-  while (Date.now() < until) {
-    if (await predicate()) return true
-    await sleep(150)
-  }
-  return Boolean(await predicate())
-}
-
-async function pageHas(contents: WebContents, selector: string): Promise<boolean> {
-  return waitFor(
-    () => contents.executeJavaScript(`document.querySelector(${JSON.stringify(selector)}) !== null`),
-    10_000
-  )
-}
-
-async function readCookie(ctx: SmokeContext, partition: string): Promise<string[]> {
-  const cookies = await ctx.sessions.sessionFor(partition).cookies.get({ name: COOKIE_NAME })
-  return cookies.map((c) => c.value).sort()
-}
-
-function httpJson(url: string): Promise<Record<string, number>> {
-  return new Promise((resolve, reject) => {
-    get(url, (res) => {
-      let body = ''
-      res.on('data', (c: Buffer) => (body += c.toString()))
-      res.on('end', () => resolve(JSON.parse(body) as Record<string, number>))
-    }).on('error', reject)
-  })
-}
-
 export async function runSmokeTest(ctx: SmokeContext): Promise<void> {
   const checks: { name: string; passed: boolean; optional?: boolean; detail?: string }[] = []
   const check: Check = (name, passed, detail, optional) => {
@@ -120,10 +54,14 @@ export async function runSmokeTest(ctx: SmokeContext): Promise<void> {
     if (ctx.stage === 'setup') {
       await setupStage(ctx, check, fixtures)
     } else if (ctx.stage === 'verify') {
+      const names = ctx.profiles.list().map((p) => p.name).sort()
+      const expected = ['Smoke A', 'Smoke A copy', 'Smoke B', 'Smoke Proxy']
+      check('profiles restored from SQLite', JSON.stringify(names) === JSON.stringify(expected), names.join(', '))
+      // Phase 4 first: it backs up profile A before anything in this run opens A's session.
+      await phase4VerifyChecks(ctx, check, fixtures)
       const all = ctx.profiles.list()
       const a = all.find((p) => p.name === 'Smoke A')
       const b = all.find((p) => p.name === 'Smoke B')
-      check('profiles restored from SQLite', all.length === 2 && Boolean(a && b), `${all.length} profiles`)
       check('proxy settings restored', b?.proxy?.host === '127.0.0.1' && b.proxy.port === 9)
       const group = ctx.catalog.listGroups().find((g) => g.name === 'Smoke group')
       check(
@@ -163,7 +101,6 @@ export async function runSmokeTest(ctx: SmokeContext): Promise<void> {
   setTimeout(() => app.quit(), 300)
 }
 
-type Check = (name: string, passed: boolean, detail?: string, optional?: boolean) => void
 
 async function setupStage(ctx: SmokeContext, check: Check, fixtures: Fixtures | null): Promise<void> {
   check('starts with no profiles', ctx.profiles.count() === 0)
@@ -232,6 +169,7 @@ async function setupStage(ctx: SmokeContext, check: Check, fixtures: Fixtures | 
     await tabChecks(ctx, check, fixtures, a.id, b.id)
     await proxyChecks(ctx, check, fixtures)
     await managerChecks(ctx, check, a.id, b.id)
+    await phase4SetupChecks(ctx, check, fixtures, a.id, b.id)
   } else {
     check('fixtures available', false, 'POB_SMOKE_FIXTURES not set')
   }
@@ -420,21 +358,6 @@ async function proxyChecks(ctx: SmokeContext, check: Check, f: Fixtures): Promis
   )
 
   for (const id of [ok, wrong, missing, closed, blackhole, challenge, direct]) ctx.profiles.delete(id)
-}
-
-function shellLanguage(contents: WebContents): Promise<string> {
-  return contents
-    .executeJavaScript(`document.querySelector('[data-testid="app-shell"]')?.getAttribute('lang') ?? ''`)
-    .catch(() => '')
-}
-
-type IpcReply<T> = { ok: true; data: T } | { ok: false; error: string }
-
-/** Calls the dashboard preload API exactly as the UI does (real IPC, sender checks, validation). */
-async function viaDashboard<T>(ctx: SmokeContext, expression: string): Promise<T> {
-  const reply = (await ctx.getDashboard()!.webContents.executeJavaScript(expression)) as IpcReply<T>
-  if (!reply.ok) throw new Error(`IPC failed: ${reply.error}`)
-  return reply.data
 }
 
 /** Phase 3: profile manager features driven through the dashboard IPC API. */

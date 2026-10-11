@@ -4,6 +4,8 @@ import type { ProxyTestResult } from '@shared/types'
 import { ValidationError } from '@shared/validation'
 import type { Logger } from '../services/logger'
 import type { ProxyTestTarget } from '../services/profileService'
+import { DEFAULT_GEO_TIMEOUT_MS, GEO_ENDPOINTS, runGeoLookup, type GeoEndpoint, type GeoLookupResult } from '../services/geoLookup'
+import type { RouteChecker } from '../services/networkService'
 import {
   DEFAULT_PROXY_TEST_TIMEOUT_MS,
   FetchError,
@@ -20,9 +22,16 @@ import {
 
 const MAX_CONCURRENT_TESTS = 4
 
+interface CheckResult {
+  proxy: ProxyTestResult
+  geo: GeoLookupResult | null
+}
+
 export interface ProxyTesterOptions {
   endpoints?: readonly IpCheckEndpoint[]
   timeoutMs?: number
+  geoEndpoints?: readonly GeoEndpoint[]
+  geoTimeoutMs?: number
 }
 
 /**
@@ -33,10 +42,12 @@ export interface ProxyTesterOptions {
  * cache and an unsaved draft can be tested safely. Proxy credentials are given only to the
  * configured proxy server when it challenges for them, and are never logged.
  */
-export class ProxyTester {
-  private readonly inFlight = new Map<string, Promise<ProxyTestResult>>()
+export class ProxyTester implements RouteChecker {
+  private readonly inFlight = new Map<string, Promise<CheckResult>>()
   private readonly endpoints: readonly IpCheckEndpoint[]
   private readonly timeoutMs: number
+  private readonly geoEndpoints: readonly GeoEndpoint[]
+  private readonly geoTimeoutMs: number
 
   constructor(
     private readonly logger: Logger,
@@ -44,6 +55,8 @@ export class ProxyTester {
   ) {
     this.endpoints = options.endpoints ?? IP_CHECK_ENDPOINTS
     this.timeoutMs = options.timeoutMs ?? DEFAULT_PROXY_TEST_TIMEOUT_MS
+    this.geoEndpoints = options.geoEndpoints ?? GEO_ENDPOINTS
+    this.geoTimeoutMs = options.geoTimeoutMs ?? DEFAULT_GEO_TIMEOUT_MS
   }
 
   /**
@@ -51,6 +64,15 @@ export class ProxyTester {
    *            for the same key while one is running receives the same result).
    */
   test(key: string, target: ProxyTestTarget): Promise<ProxyTestResult> {
+    return this.check(key, target, { geo: false }).then((r) => r.proxy)
+  }
+
+  /**
+   * Proxy test plus, when `geo` is set and the proxy works, an IP location lookup made through
+   * the same proxy and throw-away session — so the location is that of the proxy's exit IP,
+   * never this PC's own connection.
+   */
+  check(key: string, target: ProxyTestTarget, options: { geo: boolean }): Promise<CheckResult> {
     const running = this.inFlight.get(key)
     if (running) return running
     if (this.inFlight.size >= MAX_CONCURRENT_TESTS) {
@@ -58,12 +80,12 @@ export class ProxyTester {
         new ValidationError('Several proxy tests are already running. Try again in a moment.')
       )
     }
-    const promise = this.run(key, target).finally(() => this.inFlight.delete(key))
+    const promise = this.run(key, target, options.geo).finally(() => this.inFlight.delete(key))
     this.inFlight.set(key, promise)
     return promise
   }
 
-  private async run(key: string, target: ProxyTestTarget): Promise<ProxyTestResult> {
+  private async run(key: string, target: ProxyTestTarget, geo: boolean): Promise<CheckResult> {
     const ses = session.fromPartition(`proxy-test-${key}`, { cache: false })
     const route = routeLabel(target.proxy)
     try {
@@ -78,7 +100,16 @@ export class ProxyTester {
       this.logger.info(
         `Proxy test ${key}: ${result.status}${result.responseTimeMs !== null ? ` in ${result.responseTimeMs} ms` : ''}`
       )
-      return result
+      let location: GeoLookupResult | null = null
+      if (geo && result.ok) {
+        location = await runGeoLookup({
+          fetcher: this.createFetcher(ses, target),
+          endpoints: this.geoEndpoints,
+          timeoutMs: this.geoTimeoutMs
+        })
+        this.logger.info(`IP location lookup ${key}: ${location.status}`)
+      }
+      return { proxy: result, geo: location }
     } finally {
       await this.reset(ses)
     }

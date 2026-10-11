@@ -1,4 +1,6 @@
+import { cpus, freemem, release, totalmem } from 'node:os'
 import { readFile, stat, writeFile } from 'node:fs/promises'
+import { isAbsolute } from 'node:path'
 import {
   app,
   dialog,
@@ -7,7 +9,7 @@ import {
   type BrowserWindow,
   type IpcMainInvokeEvent
 } from 'electron'
-import { BrowserChannels, DashboardChannels } from '@shared/ipc'
+import { BrowserChannels, DashboardChannels, type BackupProgress } from '@shared/ipc'
 import type {
   AppInfo,
   AppSettings,
@@ -18,6 +20,7 @@ import type {
   ProfileInput,
   ProfileUpdate,
   ProxyInput,
+  RuntimeInfo,
   TemplateInput
 } from '@shared/types'
 import { z } from 'zod'
@@ -36,9 +39,17 @@ import {
   tabIdSchema,
   tagIdSchema,
   tagNameSchema,
-  templateIdSchema
+  templateIdSchema,
+  backupPathSchema,
+  duplicateRequestSchema,
+  fullBackupRequestSchema,
+  restoreRequestSchema,
+  saveProfileOptionsSchema
 } from '@shared/validation'
-import { MAX_BACKUP_BYTES, parseBackup } from '../services/backupService'
+import type { BackupCenter } from '../services/backupCenter'
+import { BACKUP_FORMAT, MAX_BACKUP_BYTES, parseBackup } from '../services/backupService'
+import { BackupError } from '../services/fullBackupArchive'
+import type { NetworkService } from '../services/networkService'
 import type { BulkCreator } from '../services/bulkCreate'
 import { runBulk, type BulkTarget } from '../services/bulkRunner'
 import type { CatalogService } from '../services/catalogService'
@@ -51,7 +62,7 @@ import type { SettingsService } from '../services/settingsService'
 import { isAppFrame } from './pages'
 import type { ProfileWindow, ProfileWindowManager } from './profileWindows'
 import type { ProxyTester } from './proxyTester'
-import type { SessionManager } from './sessionManager'
+import { defaultUserAgent, plainChromeUserAgent, type SessionManager } from './sessionManager'
 
 export interface IpcDeps {
   profiles: ProfileService
@@ -69,7 +80,21 @@ export interface IpcDeps {
   notifyProfilesChanged: () => void
   /** Groups, tags or templates changed. */
   notifyCatalogChanged: () => void
+  network: NetworkService
+  backupCenter: BackupCenter
+  /** Results of scheduled tasks that ran at start-up. */
+  startupNotes: string[]
+  notifyNetworkStatus: (profileId: string) => void
+  sendBackupProgress: (progress: BackupProgress) => void
 }
+
+const proxyEndpointSchema = z
+  .object({
+    host: z.string().trim().min(1).max(253),
+    port: z.coerce.number().int().min(1).max(65535),
+    username: z.string().max(256).nullable().optional()
+  })
+  .strip()
 
 const groupUpdateSchema = z.object({
   name: z.string().optional(),
@@ -78,7 +103,7 @@ const groupUpdateSchema = z.object({
 
 class UntrustedSenderError extends Error {}
 
-const USER_FACING = [ValidationError, NotFoundError]
+const USER_FACING = [ValidationError, NotFoundError, BackupError]
 
 function respond<T>(channel: string, logger: Logger, run: () => Promise<T> | T): Promise<IpcResult<T>> {
   return Promise.resolve()
@@ -144,16 +169,30 @@ export function registerIpcHandlers(deps: IpcDeps): void {
 
   dashboard(DashboardChannels.listProfiles, (query) => profiles.list(query as string | undefined))
 
-  dashboard(DashboardChannels.createProfile, (input) => {
-    const profile = profiles.create(input as ProfileInput)
+  dashboard(DashboardChannels.createProfile, (input, options) => {
+    const { allowSharedProxy } = parseOrThrow(saveProfileOptionsSchema, options ?? undefined) ?? {}
+    const profile = profiles.create(input as ProfileInput, { allowSharedProxy })
     logger.info(`Created profile ${profile.id}`)
     deps.notifyProfilesChanged()
     return profile
   })
 
-  dashboard(DashboardChannels.updateProfile, async (id, update) => {
-    const profile = profiles.update(parseOrThrow(profileIdSchema, id), update as ProfileUpdate)
+  dashboard(DashboardChannels.updateProfile, async (id, update, options) => {
+    const profileId = parseOrThrow(profileIdSchema, id)
+    const saveOptions = parseOrThrow(saveProfileOptionsSchema, options ?? undefined) ?? {}
+    const before = profiles.get(profileId)
+    const profile = profiles.update(profileId, update as ProfileUpdate, saveOptions)
     logger.info(`Updated profile ${profile.id}`)
+    // Only this profile's session and windows are updated.
+    deps.sessions.refreshBrowserSettings(profile)
+    const proxyChanged = JSON.stringify(before.proxy) !== JSON.stringify(profile.proxy)
+    if (proxyChanged && profile.browser.timezoneMode === 'auto' && settings.get().ipGeolocation && !windows.isOpen(profile.id)) {
+      // Refresh the proxy-based time zone in the background; an open window re-checks itself.
+      void deps.network
+        .check(profile.id)
+        .then(() => deps.notifyNetworkStatus(profile.id))
+        .catch((error) => logger.warn(`Background network check for profile ${profile.id} failed`, error))
+    }
     await windows.profileUpdated(profile)
     deps.notifyProfilesChanged()
     return profile
@@ -185,6 +224,10 @@ export function registerIpcHandlers(deps: IpcDeps): void {
   dashboard(DashboardChannels.getSettings, () => settings.get())
 
   dashboard(DashboardChannels.updateSettings, (update) => {
+    // The backup folder can only be chosen with the folder dialog (chooseBackupFolder).
+    if (update && typeof update === 'object' && 'backupFolder' in update) {
+      throw new ValidationError('Choose the backup folder with the "Choose folder" button.')
+    }
     const result = settings.update(update as Partial<AppSettings>)
     logger.info('Updated application settings')
     return result
@@ -415,6 +458,163 @@ export function registerIpcHandlers(deps: IpcDeps): void {
     deps.notifyProfilesChanged()
     deps.notifyCatalogChanged()
     return summary
+  })
+
+  // ---------- proxy uniqueness, duplicate, network status, runtime info ----------
+  dashboard(DashboardChannels.proxyConflicts, (id, proxy) => {
+    const profileId = parseOrThrow(nullableProfileIdSchema, id ?? null)
+    const endpoint = parseOrThrow(proxyEndpointSchema, proxy)
+    return profiles.findProxyConflicts({ host: endpoint.host, port: endpoint.port, username: endpoint.username ?? null }, profileId)
+  })
+
+  dashboard(DashboardChannels.duplicateProfile, async (id, request, options) => {
+    const result = await deps.backupCenter.duplicate(
+      parseOrThrow(profileIdSchema, id),
+      parseOrThrow(duplicateRequestSchema, request),
+      parseOrThrow(saveProfileOptionsSchema, options ?? undefined) ?? {}
+    )
+    logger.info(`Duplicated a profile into ${result.profile.id} (${result.data})`)
+    deps.notifyProfilesChanged()
+    deps.notifyCatalogChanged()
+    return result
+  })
+
+  dashboard(DashboardChannels.checkNetwork, async (id) => {
+    const profileId = parseOrThrow(profileIdSchema, id)
+    const status = await deps.network.check(profileId)
+    deps.notifyNetworkStatus(profileId)
+    return status
+  })
+
+  dashboard(DashboardChannels.networkStatuses, () => deps.network.statuses())
+
+  dashboard(DashboardChannels.runtimeInfo, (): RuntimeInfo => {
+    const cpu = cpus()
+    return {
+      electron: process.versions.electron ?? '',
+      chrome: process.versions.chrome ?? '',
+      node: process.versions.node,
+      v8: process.versions.v8,
+      defaultUserAgent: defaultUserAgent(),
+      chromeUserAgent: plainChromeUserAgent(),
+      host: {
+        platform: process.platform,
+        osRelease: release(),
+        arch: process.arch,
+        cpuModel: cpu[0]?.model?.trim() ?? 'unknown',
+        cpuCores: cpu.length,
+        totalMemoryMb: Math.round(totalmem() / 1048576),
+        freeMemoryMb: Math.round(freemem() / 1048576)
+      }
+    }
+  })
+
+  // ---------- local backups ----------
+  /**
+   * Backup files the renderer may refer to: only paths this process listed or the user picked
+   * in a file dialog. A page can never make the app read an arbitrary path.
+   */
+  const knownBackupPaths = new Set<string>()
+  const remember = <T extends { path: string }>(items: T[]): T[] => {
+    for (const item of items) knownBackupPaths.add(item.path)
+    return items
+  }
+  const knownPath = (value: unknown): string => {
+    const path = parseOrThrow(backupPathSchema, value)
+    if (!isAbsolute(path) || !knownBackupPaths.has(path)) {
+      throw new ValidationError('Choose the backup file again from the list or with "Choose file".')
+    }
+    return path
+  }
+  const dialogParent = (): BrowserWindow | undefined => deps.getDashboard() ?? undefined
+
+  dashboard(DashboardChannels.chooseBackupFolder, async () => {
+    const options = { title: 'Choose a folder for backups', properties: ['openDirectory' as const, 'createDirectory' as const] }
+    const parent = dialogParent()
+    const choice = parent ? await dialog.showOpenDialog(parent, options) : await dialog.showOpenDialog(options)
+    const folder = choice.filePaths[0]
+    if (choice.canceled || !folder) return null
+    const updated = settings.update({ backupFolder: folder })
+    logger.info('Backup folder changed')
+    return updated
+  })
+
+  dashboard(DashboardChannels.openBackupFolder, async () => {
+    const folder = deps.backupCenter.backupFolder()
+    const error = await shell.openPath(folder)
+    if (error) throw new ValidationError(`Could not open the backup folder: ${error}`)
+  })
+
+  dashboard(DashboardChannels.backupMetadata, async (ids) => {
+    const selection = ids === 'all' ? 'all' : parseOrThrow(profileIdsSchema, ids)
+    const entry = await deps.backupCenter.backupMetadata(selection)
+    if (entry.path) knownBackupPaths.add(entry.path)
+    return entry
+  })
+
+  dashboard(DashboardChannels.backupFull, async (request) => {
+    const { profileIds, password } = parseOrThrow(fullBackupRequestSchema, request)
+    let last = 0
+    const outcomes = await deps.backupCenter.backupFull(profileIds, password, (profileId, doneBytes, totalBytes) => {
+      const now = Date.now()
+      if (now - last < 150 && doneBytes < totalBytes) return
+      last = now
+      deps.sendBackupProgress({ profileId, doneBytes, totalBytes })
+    })
+    logger.info(`Full backup: ${outcomes.map((o) => o.status).join(', ')}`)
+    return outcomes
+  })
+
+  dashboard(DashboardChannels.listBackups, async () => remember(await deps.backupCenter.listBackups()))
+
+  dashboard(DashboardChannels.chooseBackupFile, async () => {
+    const options = {
+      title: 'Choose a backup file',
+      properties: ['openFile' as const],
+      filters: [{ name: 'Proxy Own Browser backups', extensions: ['json', 'pobfull'] }]
+    }
+    const parent = dialogParent()
+    const choice = parent ? await dialog.showOpenDialog(parent, options) : await dialog.showOpenDialog(options)
+    const file = choice.filePaths[0]
+    if (choice.canceled || !file) return null
+    const info = await deps.backupCenter.describeFile(file)
+    if (!info) throw new ValidationError(`This file is not a Proxy Own Browser backup (${BACKUP_FORMAT} or .pobfull).`)
+    return remember([info])[0]!
+  })
+
+  dashboard(DashboardChannels.verifyBackup, (path, password) =>
+    deps.backupCenter.verify(knownPath(path), typeof password === 'string' ? password : undefined)
+  )
+
+  dashboard(DashboardChannels.restoreBackup, async (request) => {
+    const parsed = parseOrThrow(restoreRequestSchema, request)
+    const path = knownPath(parsed.path)
+    if (parsed.target === 'original') {
+      // In-place restores require the target profile to be closed (checked again inside).
+      for (const id of parsed.profileIds ?? []) {
+        if (windows.isOpen(id)) throw new ValidationError('Close the profile window before restoring it.')
+      }
+    }
+    const outcome = await deps.backupCenter.restore({ ...parsed, path })
+    for (const id of outcome.profileIds) {
+      if (profiles.exists(id)) await windows.profileUpdated(profiles.get(id))
+    }
+    logger.info(`Restore (${parsed.target}): ${outcome.status}`)
+    deps.notifyProfilesChanged()
+    deps.notifyCatalogChanged()
+    return outcome
+  })
+
+  dashboard(DashboardChannels.backupHistory, (profileId) =>
+    deps.backupCenter.history(profileId === undefined || profileId === null ? undefined : parseOrThrow(profileIdSchema, profileId))
+  )
+  dashboard(DashboardChannels.pendingJobs, () => deps.backupCenter.pendingJobs())
+  dashboard(DashboardChannels.cancelJob, (id) => deps.backupCenter.cancelJob(parseOrThrow(z.uuid(), id)))
+  dashboard(DashboardChannels.startupNotes, () => deps.startupNotes)
+  dashboard(DashboardChannels.restartApp, () => {
+    logger.info('Restarting at the user’s request to finish scheduled tasks')
+    app.relaunch()
+    app.quit()
   })
 
   toolbar(BrowserChannels.getState, (entry) => windows.state(entry))

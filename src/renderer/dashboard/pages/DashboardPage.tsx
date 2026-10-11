@@ -10,9 +10,10 @@ interface Props {
   data: AppData
   onCreate: () => void
   onNavigate: (page: PageId) => void
+  onOpenDetails: (profileId: string) => void
 }
 
-export function DashboardPage({ data, onCreate, onNavigate }: Props) {
+export function DashboardPage({ data, onCreate, onNavigate, onOpenDetails }: Props) {
   const { t, formatDate, formatNumber } = useI18n()
   const withProxy = data.profiles.filter((p) => p.proxy).length
   const status = (id: string) => data.statuses[id] ?? 'closed'
@@ -31,6 +32,20 @@ export function DashboardPage({ data, onCreate, onNavigate }: Props) {
           <Icon name="plus" /> {t('profiles.new')}
         </button>
       </header>
+
+      {data.startupNotes.length > 0 && (
+        <div className="alert info" role="status" data-testid="startup-notes">
+          <strong>{t('jobs.startupTitle')}</strong>
+          <ul>
+            {data.startupNotes.map((n) => (
+              <li key={n}>{n}</li>
+            ))}
+          </ul>
+          <button type="button" className="button small" onClick={data.dismissStartupNotes}>
+            {t('common.dismiss')}
+          </button>
+        </div>
+      )}
 
       <div className="stats four">
         <button type="button" className="stat" onClick={() => onNavigate('profiles')}>
@@ -71,7 +86,9 @@ export function DashboardPage({ data, onCreate, onNavigate }: Props) {
                 <div className="card-top">
                   <ProfileAvatar profile={profile} size={40} />
                   <div className="card-title">
-                    <strong>{profile.name}</strong>
+                    <button type="button" className="link-button strong" onClick={() => onOpenDetails(profile.id)}>
+                      {profile.name}
+                    </button>
                     <span className="muted small">{describeProxy(profile.proxy) ?? t('common.directConnection')}</span>
                   </div>
                   <StatusBadge status={status(profile.id)} compact />

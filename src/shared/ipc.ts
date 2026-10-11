@@ -21,7 +21,21 @@ import type {
   ProfileRuntimeStatus,
   ProfileTag,
   ProfileTemplate,
-  TemplateInput
+  TemplateInput,
+  BackupFileInfo,
+  BackupHistoryEntry,
+  BackupVerifyResult,
+  DuplicateRequest,
+  DuplicateResult,
+  FullBackupOutcome,
+  FullBackupRequest,
+  PendingJob,
+  ProfileNetworkStatus,
+  ProxyConflict,
+  RestoreOutcome,
+  RestoreRequest,
+  RuntimeInfo,
+  SaveProfileOptions
 } from './types'
 
 /** Invoke channels callable from the dashboard window. */
@@ -62,7 +76,25 @@ export const DashboardChannels = {
   bulkAssignGroup: 'bulk:assign-group',
   bulkChangeTags: 'bulk:change-tags',
   bulkExport: 'bulk:export',
-  bulkDelete: 'bulk:delete'
+  bulkDelete: 'bulk:delete',
+  proxyConflicts: 'proxy:conflicts',
+  duplicateProfile: 'profiles:duplicate',
+  checkNetwork: 'network:check',
+  networkStatuses: 'network:statuses',
+  runtimeInfo: 'app:runtime-info',
+  chooseBackupFolder: 'backups:choose-folder',
+  openBackupFolder: 'backups:open-folder',
+  backupMetadata: 'backups:metadata',
+  backupFull: 'backups:full',
+  listBackups: 'backups:list',
+  chooseBackupFile: 'backups:choose-file',
+  verifyBackup: 'backups:verify',
+  restoreBackup: 'backups:restore',
+  backupHistory: 'backups:history',
+  pendingJobs: 'jobs:pending',
+  cancelJob: 'jobs:cancel',
+  startupNotes: 'jobs:startup-notes',
+  restartApp: 'app:restart'
 } as const
 
 /** Invoke channels callable from a profile window toolbar. */
@@ -86,13 +118,21 @@ export const Events = {
   navigationState: 'event:navigation-state',
   focusAddressBar: 'event:focus-address-bar',
   profileStatusesChanged: 'event:profile-statuses-changed',
-  catalogChanged: 'event:catalog-changed'
+  catalogChanged: 'event:catalog-changed',
+  networkStatusChanged: 'event:network-status-changed',
+  backupProgress: 'event:backup-progress'
 } as const
+
+export interface BackupProgress {
+  profileId: string
+  doneBytes: number
+  totalBytes: number
+}
 
 export interface DashboardApi {
   listProfiles(query?: string): Promise<IpcResult<Profile[]>>
-  createProfile(input: ProfileInput): Promise<IpcResult<Profile>>
-  updateProfile(id: string, update: ProfileUpdate): Promise<IpcResult<Profile>>
+  createProfile(input: ProfileInput, options?: SaveProfileOptions): Promise<IpcResult<Profile>>
+  updateProfile(id: string, update: ProfileUpdate, options?: SaveProfileOptions): Promise<IpcResult<Profile>>
   deleteProfile(id: string, options: DeleteProfileOptions): Promise<IpcResult<void>>
   openProfile(id: string): Promise<IpcResult<void>>
   closeProfile(id: string): Promise<IpcResult<void>>
@@ -138,6 +178,35 @@ export interface DashboardApi {
   bulkExport(ids: string[]): Promise<IpcResult<{ saved: boolean; filePath?: string; profileCount: number }>>
   bulkDelete(ids: string[], scope: DeleteDataScope): Promise<IpcResult<BulkSummary>>
 
+  /** Other profiles using the same proxy endpoint (host, port and username). */
+  proxyConflicts(
+    profileId: string | null,
+    proxy: { host: string; port: number; username?: string | null }
+  ): Promise<IpcResult<ProxyConflict[]>>
+  duplicateProfile(id: string, request: DuplicateRequest, options?: SaveProfileOptions): Promise<IpcResult<DuplicateResult>>
+  /** Proxy check + public IP + IP location through the profile's saved proxy (stored). */
+  checkNetwork(id: string): Promise<IpcResult<ProfileNetworkStatus>>
+  networkStatuses(): Promise<IpcResult<Record<string, ProfileNetworkStatus>>>
+  runtimeInfo(): Promise<IpcResult<RuntimeInfo>>
+
+  chooseBackupFolder(): Promise<IpcResult<AppSettings | null>>
+  openBackupFolder(): Promise<IpcResult<void>>
+  backupMetadata(ids: string[] | 'all'): Promise<IpcResult<BackupHistoryEntry>>
+  backupFull(request: FullBackupRequest): Promise<IpcResult<FullBackupOutcome[]>>
+  listBackups(): Promise<IpcResult<BackupFileInfo[]>>
+  /** Lets the user pick a backup file anywhere on this PC. */
+  chooseBackupFile(): Promise<IpcResult<BackupFileInfo | null>>
+  verifyBackup(path: string, password?: string): Promise<IpcResult<BackupVerifyResult>>
+  restoreBackup(request: RestoreRequest): Promise<IpcResult<RestoreOutcome>>
+  backupHistory(profileId?: string): Promise<IpcResult<BackupHistoryEntry[]>>
+  pendingJobs(): Promise<IpcResult<PendingJob[]>>
+  cancelJob(id: string): Promise<IpcResult<void>>
+  /** Results of tasks that ran when the app started (scheduled backups/restores). */
+  startupNotes(): Promise<IpcResult<string[]>>
+  restartApp(): Promise<IpcResult<void>>
+
+  onNetworkStatusChanged(listener: (profileId: string) => void): () => void
+  onBackupProgress(listener: (progress: BackupProgress) => void): () => void
   onProfileStatusesChanged(listener: (statuses: Record<string, ProfileRuntimeStatus>) => void): () => void
   onCatalogChanged(listener: () => void): () => void
   onProfilesChanged(listener: () => void): () => void

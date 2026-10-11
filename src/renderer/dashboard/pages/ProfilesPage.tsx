@@ -4,7 +4,11 @@ import { describeProxy } from '@shared/proxy'
 import type { BulkSummary, Profile, ProfileInput } from '@shared/types'
 import { Icon } from '../../common/Icon'
 import { errorMessage, unwrap } from '../../common/ipc'
+import { BackupChoiceDialog, FullBackupDialog } from '../components/BackupDialogs'
 import { BulkCreateWizard } from '../components/BulkCreateWizard'
+import { DuplicateDialog } from '../components/DuplicateDialog'
+import { NetworkBadge } from '../components/NetworkStatusView'
+import { useSharedProxyGuard } from '../components/SharedProxyGuard'
 import { BulkResultDialog, GroupChip, GroupSelect, StatusBadge, TagInput, TagList } from '../components/Bits'
 import { ConfirmDialog, Modal } from '../components/Modal'
 import { ProfileAvatar } from '../components/ProfileBadge'
@@ -20,6 +24,8 @@ interface Props {
   /** Template to start the bulk wizard with (from the Templates page). */
   wizardTemplateId: string | null
   onWizardHandled: () => void
+  /** Opens the profile details page (network, time zone, browser settings, backups). */
+  onOpenDetails: (profileId: string) => void
 }
 
 type View = 'table' | 'cards'
@@ -32,6 +38,9 @@ type Dialog =
   | { kind: 'bulk-tags' }
   | { kind: 'wizard'; templateId: string | null }
   | { kind: 'result'; summary: BulkSummary }
+  | { kind: 'duplicate'; profile: Profile }
+  | { kind: 'backup-choice' }
+  | { kind: 'full-backup'; profiles: Profile[] }
   | null
 
 const SORT_LABEL: Record<SortKey, TKey> = {
@@ -55,7 +64,7 @@ function storedView(): View {
 const isTyping = (target: EventTarget | null): boolean =>
   target instanceof HTMLElement && (target.isContentEditable || ['INPUT', 'TEXTAREA', 'SELECT'].includes(target.tagName))
 
-export function ProfilesPage({ data, createRequested, onCreateHandled, wizardTemplateId, onWizardHandled }: Props) {
+export function ProfilesPage({ data, createRequested, onCreateHandled, wizardTemplateId, onWizardHandled, onOpenDetails }: Props) {
   const { t, formatDate } = useI18n()
   const [query, setQuery] = useState<ProfileQuery>(DEFAULT_QUERY)
   const [view, setView] = useState<View>(storedView)
@@ -63,6 +72,7 @@ export function ProfilesPage({ data, createRequested, onCreateHandled, wizardTem
   const [dialog, setDialog] = useState<Dialog>(null)
   const [busy, setBusy] = useState(false)
   const searchRef = useRef<HTMLInputElement>(null)
+  const { guard, dialog: sharedProxyDialog } = useSharedProxyGuard()
   const listRef = useRef<HTMLDivElement>(null)
 
   const groupById = useMemo(() => new Map(data.groups.map((g) => [g.id, g])), [data.groups])
@@ -211,10 +221,12 @@ export function ProfilesPage({ data, createRequested, onCreateHandled, wizardTem
     <>
       {describeProxy(p.proxy) ?? <span className="muted">{t('common.direct')}</span>}
       {p.proxy?.username && !p.proxy.hasPassword && <div className="warn small">{t('profiles.passwordMissing')}</div>}
+      <NetworkBadge status={data.network[p.id]} />
     </>
   )
 
-  const rowActions = (p: Profile) => {
+  /** `inTable` leaves out Duplicate (available in card view and on the details page) to keep rows compact. */
+  const rowActions = (p: Profile, inTable = false) => {
     const running = status(p) !== 'closed'
     return (
       <div className="row-actions">
@@ -234,12 +246,33 @@ export function ProfilesPage({ data, createRequested, onCreateHandled, wizardTem
         <button
           type="button"
           className="icon-button"
+          title={t('details.open')}
+          aria-label={t('details.openFor', { name: p.name })}
+          onClick={() => onOpenDetails(p.id)}
+          data-testid="details-button"
+        >
+          <Icon name="info" />
+        </button>
+        <button
+          type="button"
+          className="icon-button"
           title={t('common.edit')}
           aria-label={t('profiles.edit', { name: p.name })}
           onClick={() => setDialog({ kind: 'edit', profile: p })}
         >
           <Icon name="edit" />
         </button>
+        {!inTable && (
+          <button
+            type="button"
+            className="icon-button"
+            title={t('dup.action')}
+            aria-label={t('dup.title', { name: p.name })}
+            onClick={() => setDialog({ kind: 'duplicate', profile: p })}
+          >
+            <Icon name="copy" />
+          </button>
+        )}
         <button
           type="button"
           className="icon-button danger"
@@ -480,7 +513,9 @@ export function ProfilesPage({ data, createRequested, onCreateHandled, wizardTem
                         <div className="profile-cell">
                           <ProfileAvatar profile={p} size={30} />
                           <div className="profile-text">
-                            <div className="profile-name" title={p.name}>{p.name}</div>
+                            <button type="button" className="profile-name link-button" title={p.name} onClick={() => onOpenDetails(p.id)}>
+                              {p.name}
+                            </button>
                             <StatusBadge status={status(p)} />
                             {p.notes && <div className="muted small clamp">{p.notes}</div>}
                           </div>
@@ -490,7 +525,7 @@ export function ProfilesPage({ data, createRequested, onCreateHandled, wizardTem
                       <td><TagList tags={p.tags} /></td>
                       <td className="proxy-cell">{proxyCell(p)}</td>
                       <td className="muted nowrap">{formatDate(p.lastOpenedAt)}</td>
-                      <td className="actions-col">{rowActions(p)}</td>
+                      <td className="actions-col">{rowActions(p, true)}</td>
                     </tr>
                   ))}
                 </tbody>
@@ -551,6 +586,9 @@ export function ProfilesPage({ data, createRequested, onCreateHandled, wizardTem
           <button type="button" className="button small" disabled={busy} onClick={() => void bulkExport()}>
             <Icon name="download" size={16} /> {t('bulk.export')}
           </button>
+          <button type="button" className="button small" disabled={busy} onClick={() => setDialog({ kind: 'backup-choice' })}>
+            <Icon name="shield" size={16} /> {t('bulk.backup')}
+          </button>
           <button type="button" className="button small danger-outline" disabled={busy} onClick={() => setDialog({ kind: 'bulk-delete' })}>
             <Icon name="trash" size={16} /> {t('bulk.delete')}
           </button>
@@ -568,11 +606,13 @@ export function ProfilesPage({ data, createRequested, onCreateHandled, wizardTem
             tagSuggestions={data.tags}
             defaultGroupId={query.group !== 'all' && query.group !== 'none' ? query.group : null}
             onCancel={() => setDialog(null)}
-            onSubmit={async (input) => {
-              const profile = await data.createProfile(input as ProfileInput)
-              data.notify('success', t('profiles.created', { name: profile.name }))
-              setDialog(null)
-            }}
+            onSubmit={(input) =>
+              guard(async (options) => {
+                const profile = await data.createProfile(input as ProfileInput, options)
+                data.notify('success', t('profiles.created', { name: profile.name }))
+                setDialog(null)
+              })
+            }
           />
         </Modal>
       )}
@@ -585,11 +625,13 @@ export function ProfilesPage({ data, createRequested, onCreateHandled, wizardTem
             groups={data.groups}
             tagSuggestions={data.tags}
             onCancel={() => setDialog(null)}
-            onSubmit={async (input) => {
-              const profile = await data.updateProfile(dialog.profile.id, input)
-              data.notify('success', t('profiles.saved', { name: profile.name }))
-              setDialog(null)
-            }}
+            onSubmit={(input) =>
+              guard(async (options) => {
+                const profile = await data.updateProfile(dialog.profile.id, input, options)
+                data.notify('success', t('profiles.saved', { name: profile.name }))
+                setDialog(null)
+              })
+            }
           />
         </Modal>
       )}
@@ -649,6 +691,46 @@ export function ProfilesPage({ data, createRequested, onCreateHandled, wizardTem
       )}
 
       {dialog?.kind === 'result' && <BulkResultDialog summary={dialog.summary} onClose={() => setDialog(null)} />}
+
+      {dialog?.kind === 'duplicate' && (
+        <DuplicateDialog
+          profile={dialog.profile}
+          onClose={() => setDialog(null)}
+          onDone={(result) => {
+            setDialog(null)
+            data.notify(
+              result.data === 'scheduled' ? 'info' : 'success',
+              [t('dup.done', { name: result.profile.name }), ...result.details.slice(0, 1)].join(' ')
+            )
+            void data.refresh()
+          }}
+        />
+      )}
+
+      {dialog?.kind === 'backup-choice' && (
+        <BackupChoiceDialog
+          count={selection.length}
+          onClose={() => setDialog(null)}
+          onMetadata={() => {
+            setDialog(null)
+            void unwrap(window.pob.backupMetadata(selection))
+              .then((entry) => data.notify('success', t('backup.metaDone', { file: entry.fileName ?? '' })))
+              .catch((error) => data.notify('error', errorMessage(error)))
+          }}
+          onFull={() => setDialog({ kind: 'full-backup', profiles: data.profiles.filter((p) => selection.includes(p.id)) })}
+        />
+      )}
+
+      {dialog?.kind === 'full-backup' && (
+        <FullBackupDialog
+          profiles={dialog.profiles}
+          backupFolder={data.settings?.backupFolder ?? null}
+          onClose={() => setDialog(null)}
+          onFinished={() => {}}
+        />
+      )}
+
+      {sharedProxyDialog}
     </section>
   )
 }

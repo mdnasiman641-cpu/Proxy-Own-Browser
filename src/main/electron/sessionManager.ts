@@ -1,12 +1,41 @@
-import { session, type Session } from 'electron'
+import { app, session, type Session } from 'electron'
+import {
+  ALWAYS_ALLOWED_PERMISSIONS,
+  CONFIGURABLE_PERMISSIONS,
+  acceptLanguageFor,
+  chromeUserAgent,
+  type BrowserConfig,
+  type ConfigurablePermission
+} from '@shared/browserConfig'
 import { buildProxyRules, describeProxy } from '@shared/proxy'
 import { isProfilePartition, partitionDirectoryName } from '@shared/partition'
 import type { Profile } from '@shared/types'
 import type { Logger } from '../services/logger'
 import { removeManagedPartitionDir } from '../services/managedPaths'
 
-/** Permissions web pages may use without asking. Everything else is denied in Phase 1. */
-const ALLOWED_PERMISSIONS = new Set(['fullscreen', 'clipboard-sanitized-write', 'pointerLock'])
+/** Permissions web pages may use without asking. Others depend on the profile's settings. */
+const ALWAYS_ALLOWED = new Set<string>(ALWAYS_ALLOWED_PERMISSIONS)
+const CONFIGURABLE = new Set<string>(CONFIGURABLE_PERMISSIONS)
+
+/** Electron's own default User-Agent (real Electron/Chromium versions of this build). */
+export function defaultUserAgent(): string {
+  return app.userAgentFallback
+}
+
+/** The same real Chromium version without the Electron and app-name tokens. */
+export function plainChromeUserAgent(): string {
+  return chromeUserAgent(app.userAgentFallback, app.getName())
+}
+
+/** The User-Agent a profile's pages use (always the installed runtime's real version). */
+export function userAgentFor(profile: Pick<Profile, 'browser'>): string {
+  return profile.browser.userAgent === 'chrome' ? plainChromeUserAgent() : defaultUserAgent()
+}
+
+/** Accept-Language list for a profile with a language set, or null to keep the default. */
+export function acceptLanguageForProfile(profile: Pick<Profile, 'browser'>): string | null {
+  return profile.browser.language ? acceptLanguageFor(profile.browser.language) : null
+}
 
 /**
  * Owns the Electron sessions for profiles. Each profile maps to exactly one persistent
@@ -16,6 +45,10 @@ export class SessionManager {
   private readonly profileBySession = new WeakMap<Session, string>()
   private readonly configured = new Set<string>()
   private readonly known = new Map<string, Session>()
+  /** Partitions whose session was created in this run (Chromium then keeps their files open). */
+  private readonly loadedThisRun = new Set<string>()
+  /** Browser settings per partition, read by the permission handlers at request time. */
+  private readonly configs = new Map<string, BrowserConfig>()
 
   constructor(
     private readonly userDataPath: string,
@@ -26,19 +59,43 @@ export class SessionManager {
     if (!isProfilePartition(partition)) throw new Error('Refusing to use a non-profile partition')
     const ses = session.fromPartition(partition, { cache: true })
     this.known.set(partition, ses)
+    this.loadedThisRun.add(partition)
     return ses
+  }
+
+  /**
+   * Whether Chromium has opened this profile's storage in the current run. Its database files
+   * then stay open until the app exits, so they must not be copied or replaced until a restart.
+   */
+  isLoadedThisRun(partition: string): boolean {
+    return this.loadedThisRun.has(partition)
   }
 
   /** Returns the profile's session with security policy and proxy applied. */
   async prepare(profile: Profile): Promise<Session> {
     const ses = this.sessionFor(profile.partition)
     this.profileBySession.set(ses, profile.id)
+    this.configs.set(profile.partition, profile.browser)
     if (!this.configured.has(profile.partition)) {
-      this.applySecurityPolicy(ses)
+      this.applySecurityPolicy(ses, profile.partition)
       this.configured.add(profile.partition)
     }
+    this.applyBrowserSettings(ses, profile)
     await this.applyProxy(ses, profile)
     return ses
+  }
+
+  /** User-Agent and Accept-Language for the whole profile session (all tabs and requests). */
+  private applyBrowserSettings(ses: Session, profile: Profile): void {
+    const language = profile.browser.language ?? app.getLocale()
+    ses.setUserAgent(userAgentFor(profile), acceptLanguageFor(language))
+  }
+
+  /** Applies changed browser settings to a session that is already in use. */
+  refreshBrowserSettings(profile: Profile): void {
+    const ses = this.known.get(profile.partition)
+    this.configs.set(profile.partition, profile.browser)
+    if (ses) this.applyBrowserSettings(ses, profile)
   }
 
   profileIdFor(ses: Session): string | undefined {
@@ -106,6 +163,7 @@ export class SessionManager {
     }
     this.known.delete(partition)
     this.configured.delete(partition)
+    this.configs.delete(partition)
     try {
       await removeManagedPartitionDir(this.userDataPath, partition)
     } catch (error) {
@@ -116,10 +174,17 @@ export class SessionManager {
     return complete
   }
 
-  private applySecurityPolicy(ses: Session): void {
+  /** Allowed: the harmless defaults plus what this profile's settings allow. Everything else is denied. */
+  private isAllowed(partition: string, permission: string): boolean {
+    if (ALWAYS_ALLOWED.has(permission)) return true
+    if (!CONFIGURABLE.has(permission)) return false
+    return this.configs.get(partition)?.permissions[permission as ConfigurablePermission] === 'allow'
+  }
+
+  private applySecurityPolicy(ses: Session, partition: string): void {
     ses.setPermissionRequestHandler((_wc, permission, callback) => {
-      callback(ALLOWED_PERMISSIONS.has(permission))
+      callback(this.isAllowed(partition, permission))
     })
-    ses.setPermissionCheckHandler((_wc, permission) => ALLOWED_PERMISSIONS.has(permission))
+    ses.setPermissionCheckHandler((_wc, permission) => this.isAllowed(partition, permission))
   }
 }

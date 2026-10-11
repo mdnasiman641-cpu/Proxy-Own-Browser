@@ -131,7 +131,7 @@ export class BulkCreator {
             groupId: defaults.groupId,
             tags: defaults.tags
           },
-          { proxySourceProfileId: defaults.proxySourceProfileId }
+          { proxySourceProfileId: defaults.proxySourceProfileId, allowSharedProxy: spec.allowSharedProxy === true }
         )
         return { id: profile.id, name: profile.name, ok: true, outcome: 'created', error: null }
       } catch (error) {

@@ -69,6 +69,15 @@ export function SettingsPage({ data }: { data: AppData }) {
     }
   }
 
+  const toggle = async (update: { requireUniqueProxy?: boolean; ipGeolocation?: boolean }): Promise<void> => {
+    try {
+      await data.saveSettings(update)
+      data.notify('success', t('settings.saved'))
+    } catch (e) {
+      data.notify('error', errorMessage(e))
+    }
+  }
+
   const mb = (value: number): string => t('settings.mb', { value: formatNumber(value) })
 
   return (
@@ -96,6 +105,25 @@ export function SettingsPage({ data }: { data: AppData }) {
           </select>
           <small className="muted">{t('settings.languageHint')}</small>
         </label>
+      </div>
+
+      <div className="panel form-panel" data-testid="network-settings">
+        <h2>{t('settings.networkTitle')}</h2>
+        <label className="toggle">
+          <input
+            type="checkbox"
+            checked={s.requireUniqueProxy}
+            onChange={(e) => void toggle({ requireUniqueProxy: e.target.checked })}
+            data-testid="unique-proxy-toggle"
+          />
+          <span>{t('settings.uniqueProxy')}</span>
+        </label>
+        <p className="small muted">{t('settings.uniqueProxyHint')}</p>
+        <label className="toggle">
+          <input type="checkbox" checked={s.ipGeolocation} onChange={(e) => void toggle({ ipGeolocation: e.target.checked })} />
+          <span>{t('settings.geo')}</span>
+        </label>
+        <p className="small muted">{t('settings.geoHint')}</p>
       </div>
 
       <form className="form panel form-panel" onSubmit={(e) => void save(e)} noValidate>
@@ -147,6 +175,17 @@ export function SettingsPage({ data }: { data: AppData }) {
         <p>{t('settings.resourcesHint')}</p>
         {usage ? (
           <>
+            {usage.pressure.level !== 'ok' && (
+              <div className={`alert ${usage.pressure.level === 'high' ? 'error' : 'warning'}`} role="status" data-testid="resource-pressure">
+                <strong>{t(usage.pressure.level === 'high' ? 'settings.pressureHigh' : 'settings.pressureWarning')}</strong>
+                <ul>
+                  {usage.pressure.messages.map((m) => (
+                    <li key={m}>{m}</li>
+                  ))}
+                </ul>
+                <p className="small">{t('settings.pressureNote')}</p>
+              </div>
+            )}
             <dl className="about-grid">
               <dt>{t('settings.totalMemory')}</dt>
               <dd>{mb(usage.totalMemoryMb)}</dd>

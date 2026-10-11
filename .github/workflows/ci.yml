@@ -60,25 +60,32 @@ jobs:
       - name: Report results
         if: always()
         run: |
-          # Surface the end of each step's output as annotations so results are readable
-          # from the run summary without downloading logs.
-          for f in ci-*.log; do
+          # Surface results as a few annotations (GitHub limits how many a step can show), so
+          # they are readable from the run summary without downloading logs.
+          emit() {
+            body=$(sed -e 's/\r$//' -e 's/\x1b\[[0-9;]*m//g' -e 's/%/%25/g' "$3" | awk '{printf "%s%%0A", $0}')
+            echo "::$1 title=$2::${body}"
+          }
+          for f in ci-install.log ci-typecheck.log ci-lint.log ci-build.log ci-dist-win.log ci-dist-portable.log; do
             [ -f "$f" ] || continue
-            level=notice
-            grep -qiE "error|fail|✗|×" "$f" && level=warning
-            if [ "$f" = ci-smoke.log ]; then
-              # One annotation per stage (annotations are size-limited) plus the overall result.
-              for stage in setup verify; do
-                part=$(grep -E "^\[smoke\] $stage:" "$f" | grep -vE ': PASS (dashboard renders|dashboard preload API available)$' | sed -e 's/%/%25/g' | awk '{printf "%s%%0A", $0}')
-                echo "::${level} title=ci-smoke.log ($stage)::${part}"
-              done
-              body=$(grep -E '^\[smoke\]' "$f" | grep -vE '^\[smoke\] (setup|verify):' | tail -n 20)
-            else
-              body=$(tail -n 45 "$f")
-            fi
-            body=$(printf '%s\n' "$body" | sed -e 's/\x1b\[[0-9;]*m//g' | sed -e 's/%/%25/g' | awk '{printf "%s%%0A", $0}')
-            echo "::${level} title=${f}::${body}"
+            if grep -qiE "error|failed" "$f"; then tail -n 40 "$f" > report.txt; emit warning "$f" report.txt; fi
           done
+          if [ -f ci-test.log ]; then tail -n 25 ci-test.log > report.txt; emit notice ci-test.log report.txt; fi
+          if [ -f ci-smoke.log ]; then
+            { grep -E '^\[smoke\] [a-z]+: (FAIL|WARN)' ci-smoke.log; grep -E '^\[smoke\]' ci-smoke.log | grep -vE '^\[smoke\] [a-z]+: '; } > report.txt || true
+            if grep -qE 'FAIL|no result|FAILED' report.txt; then level=warning; else level=notice; fi
+            emit $level "smoke test: summary and problems" report.txt
+            grep -E '^\[smoke\] setup: PASS' ci-smoke.log | sed -e 's/^\[smoke\] setup: PASS //' > passes.txt || true
+            for part in 1 2 3 4; do
+              sed -n "$(( (part - 1) * 30 + 1 )),$(( part * 30 ))p" passes.txt > report.txt
+              [ -s report.txt ] && emit notice "smoke test: setup checks passed ($part)" report.txt
+            done
+            grep -E '^\[smoke\] verify: PASS' ci-smoke.log | sed -e 's/^\[smoke\] verify: PASS //' > report.txt || true
+            [ -s report.txt ] && emit notice "smoke test: restart checks" report.txt
+            grep -E '^\[smoke-log\]' ci-smoke.log | tail -n 28 | cut -c 12-220 > report.txt || true
+            [ -s report.txt ] && emit warning "smoke test: app log after failure" report.txt
+          fi
+          exit 0
 
       - name: List Windows executables
         run: |

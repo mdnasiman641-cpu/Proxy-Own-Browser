@@ -35,6 +35,8 @@ export function BulkCreateWizard({ data, initialTemplateId, onClose }: Props) {
   const [startUrl, setStartUrl] = useState('')
   /** 'inherit' (template), 'none', or the id of the profile whose proxy is copied. */
   const [proxyChoice, setProxyChoice] = useState<string>(initialTemplateId ? 'inherit' : 'none')
+  /** Explicit confirmation needed when "Require unique proxy assignment" is on. */
+  const [allowShared, setAllowShared] = useState(false)
   const [plan, setPlan] = useState<BulkCreatePlan | null>(null)
   const [error, setError] = useState<string | null>(null)
   const [busy, setBusy] = useState(false)
@@ -55,8 +57,10 @@ export function BulkCreateWizard({ data, initialTemplateId, onClose }: Props) {
     ...(startUrl.trim() ? { startUrl: startUrl.trim() } : {}),
     ...(templateId && proxyChoice === 'inherit'
       ? {}
-      : { proxySourceProfileId: proxyChoice === 'none' || proxyChoice === 'inherit' ? null : proxyChoice })
+      : { proxySourceProfileId: proxyChoice === 'none' || proxyChoice === 'inherit' ? null : proxyChoice }),
+    allowSharedProxy: allowShared
   })
+  const sharesProxy = proxyChoice !== 'none' && Boolean(data.settings?.requireUniqueProxy)
 
   const preview = async (): Promise<void> => {
     setBusy(true)
@@ -205,6 +209,12 @@ export function BulkCreateWizard({ data, initialTemplateId, onClose }: Props) {
             </select>
             <small className="muted">{t('wizard.proxyHint')}</small>
           </label>
+          {sharesProxy && (
+            <label className="toggle confirm-toggle">
+              <input type="checkbox" checked={allowShared} onChange={(e) => setAllowShared(e.target.checked)} />
+              <span>{t('wizard.allowShared')}</span>
+            </label>
+          )}
 
           {error && <div className="alert error" role="alert">{error}</div>}
           <div className="form-actions">

@@ -33,7 +33,7 @@ for (const stage of ['setup', 'verify']) {
       ...fixtures.env
     },
     stdio: 'inherit',
-    timeout: 180_000
+    timeout: 300_000
   })
 
   if (!existsSync(resultFile)) {
@@ -49,6 +49,14 @@ for (const stage of ['setup', 'verify']) {
   if (!result.passed) {
     failed = true
     break
+  }
+}
+
+if (failed) {
+  // Show the end of the app's own log (it never contains credentials) to explain the failure.
+  const log = join(dataDir, 'user-data', 'logs', 'app.log')
+  if (existsSync(log)) {
+    for (const line of readFileSync(log, 'utf8').trim().split(/\r?\n/).slice(-70)) console.log(`[smoke-log] ${line}`)
   }
 }
 

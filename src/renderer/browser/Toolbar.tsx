@@ -13,6 +13,8 @@ const EMPTY: NavigationState = {
   profileName: '',
   profileColor: '#2563eb',
   proxyLabel: null,
+  timezoneLabel: null,
+  notice: null,
   tabs: [],
   activeTabId: null
 }
@@ -116,6 +118,13 @@ export function Toolbar() {
         />
       </form>
 
+      {state.notice && !state.error && (
+        <div className="error-chip notice" role="status" title={state.notice}>
+          <Icon name="warning" size={15} />
+          <span>{state.notice}</span>
+        </div>
+      )}
+
       {state.error && (
         <div className="error-chip" role="alert" title={state.error}>
           <Icon name="warning" size={15} />
@@ -123,11 +132,20 @@ export function Toolbar() {
         </div>
       )}
 
-      <div className="profile-info" title={state.proxyLabel ? `Proxy: ${state.proxyLabel}` : 'Direct connection'}>
+      <div
+        className="profile-info"
+        title={[
+          state.proxyLabel ? `Proxy: ${state.proxyLabel}` : 'Direct connection (no proxy)',
+          `Time zone: ${state.timezoneLabel ?? "this PC's time zone"}`
+        ].join('\n')}
+      >
         <span className="dot" />
         <span className="labels">
           <span className="name">{state.profileName}</span>
-          <span className="proxy">{state.proxyLabel ?? 'Direct connection'}</span>
+          <span className="proxy">
+            {state.proxyLabel ?? 'Direct connection'}
+            {state.timezoneLabel ? ` · ${state.timezoneLabel.replace(/ \(.*\)$/, '')}` : ''}
+          </span>
         </span>
       </div>
 
