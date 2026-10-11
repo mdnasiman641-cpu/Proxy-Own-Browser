@@ -10,7 +10,7 @@ import type { ProfileService } from '../services/profileService'
 import type { SessionManager } from './sessionManager'
 
 /** Storage types removed for "this site's data" and "all website data" (cookies separately). */
-const SITE_STORAGES = ['filesystem', 'indexdb', 'localstorage', 'shadercache', 'websql', 'serviceworkers', 'cachestorage'] as const
+const SITE_STORAGES = ['filesystem', 'indexdb', 'localstorage', 'shadercache', 'serviceworkers', 'cachestorage'] as const
 
 /** A website origin typed by the user, e.g. https://example.com. */
 export function normalizeOrigin(input: string): string {
