@@ -33,7 +33,7 @@ for (const stage of ['setup', 'verify']) {
       ...fixtures.env
     },
     stdio: 'inherit',
-    timeout: 180_000
+    timeout: 300_000
   })
 
   if (!existsSync(resultFile)) {

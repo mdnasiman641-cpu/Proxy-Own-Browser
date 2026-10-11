@@ -18,12 +18,13 @@ const listen = (server) =>
   new Promise((resolve) => server.listen(0, '127.0.0.1', () => resolve(server.address().port)))
 
 function createEcho() {
-  const stats = { requests: 0, authorizationHeadersSeen: 0, proxyAuthorizationHeadersSeen: 0 }
+  const stats = { requests: 0, authorizationHeadersSeen: 0, proxyAuthorizationHeadersSeen: 0, paths: [] }
   const server = http.createServer((req, res) => {
     stats.requests++
     if (req.headers.authorization) stats.authorizationHeadersSeen++
     if (req.headers['proxy-authorization']) stats.proxyAuthorizationHeadersSeen++
     const url = new URL(req.url, 'http://127.0.0.1')
+    if (stats.paths.length < 500) stats.paths.push(url.pathname + url.search)
 
     if (url.pathname === '/stats') {
       res.writeHead(200, { 'content-type': 'application/json' })
@@ -39,6 +40,35 @@ function createEcho() {
       const viaProxy = req.headers['x-pob-test-proxy'] === '1'
       res.writeHead(200, { 'content-type': 'application/json', 'cache-control': 'no-store' })
       res.end(JSON.stringify({ ip: viaProxy ? PROXIED_IP : '127.0.0.1' }))
+      return
+    }
+    if (url.pathname === '/geo') {
+      // Shaped like https://ipwho.is/ — a documentation IP in New York through the proxy;
+      // a direct request comes from 127.0.0.1, which (like the real service) can't be located.
+      const viaProxy = req.headers['x-pob-test-proxy'] === '1'
+      res.writeHead(200, { 'content-type': 'application/json', 'cache-control': 'no-store' })
+      res.end(
+        JSON.stringify(
+          viaProxy
+            ? {
+                ip: PROXIED_IP,
+                success: true,
+                country: 'United States',
+                country_code: 'US',
+                region: 'New York',
+                city: 'New York',
+                latitude: 40.7128,
+                longitude: -74.006,
+                timezone: { id: 'America/New_York' }
+              }
+            : { ip: '127.0.0.1', success: false, message: 'Reserved range' }
+        )
+      )
+      return
+    }
+    if (url.pathname === '/headers') {
+      res.writeHead(200, { 'content-type': 'application/json', 'cache-control': 'no-store' })
+      res.end(JSON.stringify({ acceptLanguage: req.headers['accept-language'] ?? null, userAgent: req.headers['user-agent'] ?? null }))
       return
     }
     if (url.pathname === '/page') {
@@ -125,6 +155,7 @@ export async function startFixtures() {
   return {
     env: {
       POB_PROXY_TEST_URL: `http://127.0.0.1:${ports.echoPort}/ip`,
+      POB_GEO_TEST_URL: `http://127.0.0.1:${ports.echoPort}/geo`,
       POB_PROXY_TEST_TIMEOUT_MS: '3000',
       POB_SMOKE_FIXTURES: JSON.stringify({
         ...ports,

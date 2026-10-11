@@ -1,6 +1,8 @@
+import { freemem, totalmem } from 'node:os'
 import { join } from 'node:path'
 import { app, BrowserWindow, dialog, type Session } from 'electron'
 import { Events } from '@shared/ipc'
+import { BackupCenter } from './services/backupCenter'
 import { BulkCreator } from './services/bulkCreate'
 import { CatalogService } from './services/catalogService'
 import { AppDatabase } from './services/database'
@@ -8,6 +10,8 @@ import { createFileLogger, type Logger } from './services/logger'
 import { ProfileRepository } from './services/profileRepository'
 import { ProfileService } from './services/profileService'
 import { MetadataBackupService } from './services/metadataBackup'
+import { NetworkService } from './services/networkService'
+import { assessPressure } from './services/resourcePressure'
 import { SettingsService } from './services/settingsService'
 import { TemplateService } from './services/templateService'
 import { loadSqlJs } from './services/sqlite'
@@ -71,25 +75,73 @@ async function start(): Promise<void> {
 
   const cipher = new ElectronSafeStorageCipher()
   const catalog = new CatalogService(db)
-  const profiles = new ProfileService(new ProfileRepository(db), cipher, { catalog })
   const settings = new SettingsService(db)
+  const profiles = new ProfileService(new ProfileRepository(db), cipher, {
+    catalog,
+    requireUniqueProxy: () => settings.get().requireUniqueProxy
+  })
   const templates = new TemplateService(db, catalog, profiles)
   const bulkCreator = new BulkCreator(profiles, catalog, templates)
   const backups = new MetadataBackupService(profiles, catalog, templates, settings)
   const sessions = new SessionManager(userData, logger)
   const proxyTester = new ProxyTester(logger, proxyTesterOptions())
+  const network = new NetworkService({
+    db,
+    profiles,
+    checker: proxyTester,
+    geoEnabled: () => settings.get().ipGeolocation,
+    logger
+  })
+  let windowsRef: { isOpen(id: string): boolean } | null = null
+  const backupCenter = new BackupCenter({
+    userDataPath: userData,
+    db,
+    profiles,
+    catalog,
+    metadata: backups,
+    settings,
+    cipher,
+    isLoadedThisRun: (partition) => sessions.isLoadedThisRun(partition),
+    isOpen: (id) => windowsRef?.isOpen(id) ?? false,
+    appVersion: app.getVersion(),
+    logger
+  })
+  // Scheduled full backups/restores run now, before any profile session is created, so no
+  // Chromium process has those profiles' files open.
+  let startupNotes: string[] = []
+  try {
+    startupNotes = await backupCenter.runPendingJobs()
+    for (const note of startupNotes) logger.info(`Start-up task: ${note}`)
+  } catch (error) {
+    logger.error('Scheduled start-up tasks failed', error)
+    startupNotes = ['Scheduled backup/restore tasks could not run. Details are in the log file.']
+  }
 
   const broadcast = (channel: string, payload?: unknown): void => {
     if (dashboard && !dashboard.isDestroyed()) dashboard.webContents.send(channel, payload)
   }
-  const windows = new ProfileWindowManager({
+  const windows: ProfileWindowManager = new ProfileWindowManager({
     profiles,
     settings,
     sessions,
     logger,
     onOpenProfilesChanged: (ids) => broadcast(Events.openProfilesChanged, ids),
-    onStatusesChanged: (statuses) => broadcast(Events.profileStatusesChanged, statuses)
+    onStatusesChanged: (statuses) => broadcast(Events.profileStatusesChanged, statuses),
+    planLaunch: async (profileId) => {
+      const plan = await network.planLaunch(profileId)
+      broadcast(Events.networkStatusChanged, profileId)
+      return plan
+    },
+    pressure: (appMemoryMb) =>
+      assessPressure({
+        totalMemoryMb: totalmem() / 1048576,
+        freeMemoryMb: freemem() / 1048576,
+        appMemoryMb,
+        openWindows: windows.openIds().length,
+        maxOpenProfiles: settings.get().maxOpenProfiles
+      })
   })
+  windowsRef = windows
 
   registerIpcHandlers({
     profiles,
@@ -105,7 +157,12 @@ async function start(): Promise<void> {
     logger,
     getDashboard: () => dashboard,
     notifyProfilesChanged: () => broadcast(Events.profilesChanged),
-    notifyCatalogChanged: () => broadcast(Events.catalogChanged)
+    notifyCatalogChanged: () => broadcast(Events.catalogChanged),
+    network,
+    backupCenter,
+    startupNotes,
+    notifyNetworkStatus: (profileId) => broadcast(Events.networkStatusChanged, profileId),
+    sendBackupProgress: (progress) => broadcast(Events.backupProgress, progress)
   })
 
   // Diagnostics for background process failures (type, reason and exit code only).
@@ -175,6 +232,10 @@ async function start(): Promise<void> {
       templates,
       bulkCreator,
       backups,
+      network,
+      backupCenter,
+      startupNotes,
+      settings,
       getDashboard: () => dashboard,
       logger
     })
@@ -189,9 +250,11 @@ async function start(): Promise<void> {
 function proxyTesterOptions(): ConstructorParameters<typeof ProxyTester>[1] {
   if (!smokeStage) return {}
   const url = process.env.POB_PROXY_TEST_URL
+  const geoUrl = process.env.POB_GEO_TEST_URL
   const timeout = Number(process.env.POB_PROXY_TEST_TIMEOUT_MS)
   return {
     ...(url ? { endpoints: [{ url, format: 'json' as const }] } : {}),
+    ...(geoUrl ? { geoEndpoints: [{ url: geoUrl, format: 'ipwhois' as const }], geoTimeoutMs: 3000 } : {}),
     ...(timeout > 0 ? { timeoutMs: timeout } : {})
   }
 }

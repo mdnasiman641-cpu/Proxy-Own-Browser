@@ -293,7 +293,9 @@ export const bulkCreateSpecSchema = z.object({
   groupId: groupIdSchema.nullable().optional(),
   tags: tagListSchema.optional().default([]),
   startUrl: startUrlSchema.nullable().optional(),
-  proxySourceProfileId: profileIdSchema.nullable().optional()
+  proxySourceProfileId: profileIdSchema.nullable().optional(),
+  /** The user confirmed that all created profiles may share the copied proxy. */
+  allowSharedProxy: z.boolean().optional().default(false)
 })
 
 /** Names chosen in the bulk wizard (all, or only the failed ones when retrying). */

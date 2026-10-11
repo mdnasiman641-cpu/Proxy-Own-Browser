@@ -169,6 +169,11 @@ export interface BulkCreateSpec {
   startUrl?: string | null
   /** Copy the proxy settings (and saved password) of this existing profile. */
   proxySourceProfileId?: string | null
+  /**
+   * Confirmed by the user: the created profiles may share the copied proxy even when
+   * "Require unique proxy assignment" is on.
+   */
+  allowSharedProxy?: boolean
 }
 
 export type BulkPlanIssue = 'exists' | 'duplicate-in-batch' | 'invalid-name' | null

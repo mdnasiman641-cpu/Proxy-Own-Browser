@@ -1,13 +1,13 @@
 import { ipcRenderer } from 'electron'
-import { DashboardChannels as C, Events, type DashboardApi } from '@shared/ipc'
+import { DashboardChannels as C, Events, type BackupProgress, type DashboardApi } from '@shared/ipc'
 import type { ProfileRuntimeStatus } from '@shared/types'
 import { subscribe } from './subscribe'
 
 // Only these narrow functions are exposed to the page — never ipcRenderer itself.
 export const dashboardApi: DashboardApi = {
   listProfiles: (query) => ipcRenderer.invoke(C.listProfiles, query),
-  createProfile: (input) => ipcRenderer.invoke(C.createProfile, input),
-  updateProfile: (id, update) => ipcRenderer.invoke(C.updateProfile, id, update),
+  createProfile: (input, options) => ipcRenderer.invoke(C.createProfile, input, options),
+  updateProfile: (id, update, options) => ipcRenderer.invoke(C.updateProfile, id, update, options),
   deleteProfile: (id, options) => ipcRenderer.invoke(C.deleteProfile, id, options),
   openProfile: (id) => ipcRenderer.invoke(C.openProfile, id),
   closeProfile: (id) => ipcRenderer.invoke(C.closeProfile, id),
@@ -42,6 +42,26 @@ export const dashboardApi: DashboardApi = {
   bulkChangeTags: (ids, change) => ipcRenderer.invoke(C.bulkChangeTags, ids, change),
   bulkExport: (ids) => ipcRenderer.invoke(C.bulkExport, ids),
   bulkDelete: (ids, scope) => ipcRenderer.invoke(C.bulkDelete, ids, scope),
+  proxyConflicts: (profileId, proxy) => ipcRenderer.invoke(C.proxyConflicts, profileId, proxy),
+  duplicateProfile: (id, request, options) => ipcRenderer.invoke(C.duplicateProfile, id, request, options),
+  checkNetwork: (id) => ipcRenderer.invoke(C.checkNetwork, id),
+  networkStatuses: () => ipcRenderer.invoke(C.networkStatuses),
+  runtimeInfo: () => ipcRenderer.invoke(C.runtimeInfo),
+  chooseBackupFolder: () => ipcRenderer.invoke(C.chooseBackupFolder),
+  openBackupFolder: () => ipcRenderer.invoke(C.openBackupFolder),
+  backupMetadata: (ids) => ipcRenderer.invoke(C.backupMetadata, ids),
+  backupFull: (request) => ipcRenderer.invoke(C.backupFull, request),
+  listBackups: () => ipcRenderer.invoke(C.listBackups),
+  chooseBackupFile: () => ipcRenderer.invoke(C.chooseBackupFile),
+  verifyBackup: (path, password) => ipcRenderer.invoke(C.verifyBackup, path, password),
+  restoreBackup: (request) => ipcRenderer.invoke(C.restoreBackup, request),
+  backupHistory: (profileId) => ipcRenderer.invoke(C.backupHistory, profileId),
+  pendingJobs: () => ipcRenderer.invoke(C.pendingJobs),
+  cancelJob: (id) => ipcRenderer.invoke(C.cancelJob, id),
+  startupNotes: () => ipcRenderer.invoke(C.startupNotes),
+  restartApp: () => ipcRenderer.invoke(C.restartApp),
+  onNetworkStatusChanged: (listener) => subscribe<string>(Events.networkStatusChanged, listener),
+  onBackupProgress: (listener) => subscribe<BackupProgress>(Events.backupProgress, listener),
   onProfileStatusesChanged: (listener) =>
     subscribe<Record<string, ProfileRuntimeStatus>>(Events.profileStatusesChanged, listener),
   onCatalogChanged: (listener) => subscribe(Events.catalogChanged, () => listener()),
