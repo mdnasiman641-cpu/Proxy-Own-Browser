@@ -1,4 +1,4 @@
-import type { ProxyConfig } from './types'
+import type { ProxyConfig, ProxyInput } from './types'
 
 const PROTOCOL_LABEL: Record<ProxyConfig['protocol'], string> = {
   http: 'HTTP',
@@ -111,4 +111,32 @@ export function proxyEndpointKey(
   if (!proxy) return 'direct'
   const host = proxy.host.trim().toLowerCase().replace(/\.$/, '').replace(/^\[|\]$/g, '')
   return `${host}:${proxy.port}|${proxy.username ?? ''}`
+}
+
+/** Main-process refusal when an open profile's proxy would change without confirmation. */
+export const RUNNING_PROXY_CHANGE_MESSAGE =
+  'This profile is open in a window. Changing its proxy switches the network route of every open tab: pages that are loading may fail, and sites can see a new IP address in the same session. Confirm to change it now.'
+
+/**
+ * Whether saving `input` would change the profile's proxy route or credentials. Used to ask for
+ * confirmation before changing the proxy of a profile whose window is open. A typed password
+ * counts as a change (stored passwords are never sent back to compare).
+ */
+export function proxyInputChanges(current: ProxyConfig | null, input: ProxyInput | undefined): boolean {
+  if (input === undefined) return false
+  if (!input.enabled) return current !== null
+  if (!current) return true
+  const host = (input.host ?? '').trim().toLowerCase()
+  const username = (input.username ?? '').trim() || null
+  if (
+    input.protocol !== current.protocol ||
+    host !== current.host.toLowerCase() ||
+    Number(input.port) !== current.port ||
+    username !== (current.username ?? null) ||
+    (input.bypassRules ?? '').trim() !== current.bypassRules
+  ) {
+    return true
+  }
+  if (input.password === undefined) return false
+  return input.password !== '' || current.hasPassword
 }

@@ -62,6 +62,8 @@ interface StatusRow {
   geo_reused: number | null
   previous_ip: string | null
   ip_changed_at: string | null
+  last_success_at: string | null
+  last_success_ip: string | null
 }
 
 function parseGeo(json: string | null): IpGeolocation | null {
@@ -169,7 +171,9 @@ export class NetworkService {
         geoCheckedAt: row.geo_checked_at ?? null,
         geoReused: Number(row.geo_reused ?? 0) === 1,
         previousIp: row.previous_ip ?? null,
-        ipChangedAt: row.ip_changed_at ?? null
+        ipChangedAt: row.ip_changed_at ?? null,
+        lastSuccessAt: row.route_key === key ? (row.last_success_at ?? null) : null,
+        lastSuccessIp: row.route_key === key ? (row.last_success_ip ?? null) : null
       }
     }
     return result
@@ -266,6 +270,11 @@ export class NetworkService {
         ipChangedAt = previous.ip_changed_at ?? null
       }
     }
+    // Last successful test of this proxy (kept when a later test fails; reset on a proxy change).
+    const sameRoute = previous?.route_key === routeKey
+    const lastSuccess = proxy.ok
+      ? { at: checkedAt, ip: proxy.ip }
+      : { at: sameRoute ? (previous?.last_success_at ?? null) : null, ip: sameRoute ? (previous?.last_success_ip ?? null) : null }
     const tz = geoData?.timezone ?? null
     const lastValid = tz
       ? { tz, at: checkedAt, route: routeKey }
@@ -278,15 +287,16 @@ export class NetworkService {
     this.deps.db.run(
       `INSERT INTO profile_network_status (profile_id, route_key, checked_at, proxy_status, proxy_message,
          response_time_ms, ip, geo_status, geo_message, geo_json, last_valid_timezone, last_valid_timezone_at,
-         last_valid_timezone_route, geo_checked_at, geo_reused, previous_ip, ip_changed_at)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+         last_valid_timezone_route, geo_checked_at, geo_reused, previous_ip, ip_changed_at, last_success_at, last_success_ip)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
        ON CONFLICT(profile_id) DO UPDATE SET
          route_key = excluded.route_key, checked_at = excluded.checked_at, proxy_status = excluded.proxy_status,
          proxy_message = excluded.proxy_message, response_time_ms = excluded.response_time_ms, ip = excluded.ip,
          geo_status = excluded.geo_status, geo_message = excluded.geo_message, geo_json = excluded.geo_json,
          last_valid_timezone = excluded.last_valid_timezone, last_valid_timezone_at = excluded.last_valid_timezone_at,
          last_valid_timezone_route = excluded.last_valid_timezone_route, geo_checked_at = excluded.geo_checked_at,
-         geo_reused = excluded.geo_reused, previous_ip = excluded.previous_ip, ip_changed_at = excluded.ip_changed_at`,
+         geo_reused = excluded.geo_reused, previous_ip = excluded.previous_ip, ip_changed_at = excluded.ip_changed_at,
+         last_success_at = excluded.last_success_at, last_success_ip = excluded.last_success_ip`,
       [
         profileId,
         routeKey,
@@ -304,7 +314,9 @@ export class NetworkService {
         geoCheckedAt,
         geoReused ? 1 : 0,
         previousIp,
-        ipChangedAt
+        ipChangedAt,
+        lastSuccess.at,
+        lastSuccess.ip
       ]
     )
     // Status only — no IP address, location or proxy host in the log.

@@ -115,6 +115,19 @@ describe('browser settings', () => {
     expect(() => app.service.update(a.id, { browser: { cpuCores: 64 } as never })).toThrow()
   })
 
+  it('keeps the WebRTC setting per profile, defaulting to Chromium’s own behaviour', async () => {
+    expect(DEFAULT_BROWSER_CONFIG.webrtcPolicy).toBe('default')
+    expect(parseStoredBrowserConfig({ timezoneMode: 'off' }).webrtcPolicy).toBe('default')
+    expect(parseStoredBrowserConfig({ webrtcPolicy: 'bogus' }).webrtcPolicy).toBe('default')
+    expect(parseStoredBrowserConfig({ webrtcPolicy: 'disable_non_proxied_udp' }).webrtcPolicy).toBe('disable_non_proxied_udp')
+    const { service } = await createService()
+    const a = service.create({ name: 'A', browser: { webrtcPolicy: 'disable_non_proxied_udp' } })
+    const b = service.create({ name: 'B' })
+    expect(service.get(a.id).browser.webrtcPolicy).toBe('disable_non_proxied_udp')
+    expect(service.get(b.id).browser.webrtcPolicy).toBe('default')
+    expect(() => service.update(b.id, { browser: { webrtcPolicy: 'leak-everything' as never } })).toThrow()
+  })
+
   it('builds the plain Chrome User-Agent from the real one without changing versions', () => {
     const electron =
       'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) ProxyOwnBrowser/0.4.0 Chrome/140.0.7339.41 Electron/44.7.0 Safari/537.36'
@@ -214,6 +227,28 @@ describe('proxy status and automatic time zone', () => {
     app.fake.answer({ proxy: proxyOk('198.51.100.9'), geo: geoOk('198.51.100.9', 'Asia/Dhaka') })
     await app.network.check(b.id)
     expect(app.network.status(a.id)!.sameExitIpAs).toEqual([])
+  })
+
+  it('remembers the last successful test across failures and forgets it on a proxy change', async () => {
+    let clock = new Date('2026-10-01T00:00:00.000Z')
+    const app = await networkApp(() => clock)
+    const a = app.service.create({ name: 'A', proxy: PROXY })
+    expect(app.network.status(a.id)).toBeNull()
+    await app.network.check(a.id)
+    expect(app.network.status(a.id)).toMatchObject({ lastSuccessAt: '2026-10-01T00:00:00.000Z', lastSuccessIp: '203.0.113.7' })
+
+    clock = new Date('2026-10-02T00:00:00.000Z')
+    app.fake.answer({ proxy: proxyFail, geo: null })
+    const failed = await app.network.check(a.id, { force: true })
+    expect(failed.proxy.ok).toBe(false)
+    expect(failed).toMatchObject({ checkedAt: '2026-10-02T00:00:00.000Z', lastSuccessAt: '2026-10-01T00:00:00.000Z', lastSuccessIp: '203.0.113.7' })
+
+    // A different proxy has no successful test yet.
+    app.service.update(a.id, { proxy: { ...PROXY, host: '10.0.0.2' } })
+    expect(app.network.status(a.id)!.lastSuccessAt).toBeNull()
+    const other = await app.network.check(a.id, { force: true })
+    expect(other.lastSuccessAt).toBeNull()
+    expect(other.lastSuccessIp).toBeNull()
   })
 
   it('notes when the exit IP changed between the IP check and the location lookup', async () => {

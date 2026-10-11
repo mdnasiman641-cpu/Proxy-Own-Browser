@@ -178,6 +178,18 @@ export const MIGRATIONS: readonly Migration[] = [
         db.run('UPDATE profiles SET browser_config = ? WHERE id = ?', [JSON.stringify(config), id])
       }
     }
+  },
+  {
+    // Last successful proxy test per profile, and which profiles a multi-profile backup covered
+    // (so each profile can show its own backup status).
+    version: 5,
+    sql: `
+      ALTER TABLE profile_network_status ADD COLUMN last_success_at TEXT;
+      ALTER TABLE profile_network_status ADD COLUMN last_success_ip TEXT;
+      UPDATE profile_network_status SET last_success_at = checked_at, last_success_ip = ip
+        WHERE proxy_status = 'success';
+      ALTER TABLE backup_history ADD COLUMN profile_ids TEXT;
+    `
   }
 ]
 

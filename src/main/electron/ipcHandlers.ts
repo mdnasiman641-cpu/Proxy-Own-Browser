@@ -24,6 +24,8 @@ import type {
   RuntimeInfo,
   TemplateInput
 } from '@shared/types'
+import { DEFAULT_STUN_SERVER } from '@shared/diagnostics'
+import { RUNNING_PROXY_CHANGE_MESSAGE, proxyInputChanges } from '@shared/proxy'
 import { z } from 'zod'
 import {
   ValidationError,
@@ -45,9 +47,11 @@ import {
   duplicateRequestSchema,
   fullBackupRequestSchema,
   restoreRequestSchema,
-  saveProfileOptionsSchema
+  saveProfileOptionsSchema,
+  profileUpdateSchema
 } from '@shared/validation'
 import type { BackupCenter } from '../services/backupCenter'
+import { buildDiagnostics } from '../services/diagnostics'
 import { BACKUP_FORMAT, MAX_BACKUP_BYTES, parseBackup } from '../services/backupService'
 import { BackupError } from '../services/fullBackupArchive'
 import type { NetworkService } from '../services/networkService'
@@ -190,7 +194,16 @@ export function registerIpcHandlers(deps: IpcDeps): void {
     const profileId = parseOrThrow(profileIdSchema, id)
     const saveOptions = parseOrThrow(saveProfileOptionsSchema, options ?? undefined) ?? {}
     const before = profiles.get(profileId)
-    const profile = profiles.update(profileId, update as ProfileUpdate, saveOptions)
+    const typedUpdate = update as ProfileUpdate
+    if (
+      windows.isOpen(profileId) &&
+      !saveOptions.confirmRunningProxyChange &&
+      proxyInputChanges(before.proxy, parseOrThrow(profileUpdateSchema, update).proxy as ProxyInput | undefined)
+    ) {
+      // Never switch an open profile's route without the user's explicit confirmation.
+      throw new ValidationError(RUNNING_PROXY_CHANGE_MESSAGE)
+    }
+    const profile = profiles.update(profileId, typedUpdate, saveOptions)
     logger.info(`Updated profile ${profile.id}`)
     // Only this profile's session and windows are updated.
     deps.sessions.refreshBrowserSettings(profile)
@@ -514,6 +527,31 @@ export function registerIpcHandlers(deps: IpcDeps): void {
 
   dashboard(DashboardChannels.reportedTimezones, () => windows.reportedTimezones())
 
+  dashboard(DashboardChannels.runDiagnostics, async (id, options) => {
+    const profileId = parseOrThrow(profileIdSchema, id)
+    const { stun } = parseOrThrow(z.object({ stun: z.boolean() }).strict(), options ?? { stun: false })
+    const profile = deps.profiles.get(profileId)
+    const stunServer = stun ? DEFAULT_STUN_SERVER : null
+    const pageResult = await windows.diagnosePage(profileId, stunServer)
+    const report = buildDiagnostics({
+      profile,
+      network: deps.network.status(profileId),
+      page: pageResult?.page ?? null,
+      pagePartition: pageResult?.pagePartition ?? null,
+      resolvedProxy: pageResult?.resolvedProxy ?? null,
+      expected: pageResult?.expected ?? null,
+      pageProblem: pageResult?.problem ?? null,
+      systemTimezone: Intl.DateTimeFormat().resolvedOptions().timeZone,
+      stunServer,
+      now: new Date()
+    })
+    // Verdicts only: no addresses, cookies or page content are written to the log.
+    logger.info(
+      `Diagnostics for profile ${profileId}${stun ? ' (with STUN test)' : ''}: proxy ${report.proxyConnection.verdict}, route ${report.proxyRoute.verdict}, time zone ${report.timezone.verdict}, WebRTC ${report.webrtcLocal.verdict}${report.webrtcStun ? `/${report.webrtcStun.verdict}` : ''}`
+    )
+    return report
+  })
+
   dashboard(DashboardChannels.networkStatuses, () => deps.network.statuses())
 
   dashboard(DashboardChannels.runtimeInfo, (): RuntimeInfo => {
@@ -636,6 +674,7 @@ export function registerIpcHandlers(deps: IpcDeps): void {
   dashboard(DashboardChannels.backupHistory, (profileId) =>
     deps.backupCenter.history(profileId === undefined || profileId === null ? undefined : parseOrThrow(profileIdSchema, profileId))
   )
+  dashboard(DashboardChannels.backupStatus, () => deps.backupCenter.backupStatus())
   dashboard(DashboardChannels.pendingJobs, () => deps.backupCenter.pendingJobs())
   dashboard(DashboardChannels.cancelJob, (id) => deps.backupCenter.cancelJob(parseOrThrow(z.uuid(), id)))
   dashboard(DashboardChannels.startupNotes, () => deps.startupNotes)

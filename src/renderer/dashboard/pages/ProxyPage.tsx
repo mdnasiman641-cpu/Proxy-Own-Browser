@@ -118,6 +118,9 @@ export function ProxyPage({ data, onOpenDetails }: { data: AppData; onOpenDetail
                       </span>
                       {net?.proxy.responseTimeMs != null && <span className="muted"> {t('net.ms', { ms: net.proxy.responseTimeMs })}</span>}
                       {net && !net.current && <div className="muted">{t('net.outOfDate')}</div>}
+                      {net && !net.proxy.ok && net.lastSuccessAt && (
+                        <div className="muted">{t('loc.lastSuccess', { date: formatDate(net.lastSuccessAt) })}</div>
+                      )}
                     </td>
                     <td className="small">
                       <div className="mono" data-testid="row-ip">{net?.ip ?? unknown}</div>

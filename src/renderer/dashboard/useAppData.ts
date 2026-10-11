@@ -8,6 +8,7 @@ import type {
   ProfileRuntimeStatus,
   ProfileTag,
   ProfileNetworkStatus,
+  ProfileBackupStatus,
   ProfileTemplate,
   ProfileUpdate,
   SaveProfileOptions
@@ -35,6 +36,7 @@ export function useAppData() {
   const [settings, setSettings] = useState<AppSettings | null>(null)
   const [network, setNetwork] = useState<Record<string, ProfileNetworkStatus>>({})
   const [reportedTimezones, setReportedTimezones] = useState<Record<string, BrowserTimezoneReport>>({})
+  const [backups, setBackups] = useState<Record<string, ProfileBackupStatus>>({})
   const [startupNotes, setStartupNotes] = useState<string[]>([])
   const [loading, setLoading] = useState(true)
   const [loadError, setLoadError] = useState<string | null>(null)
@@ -71,6 +73,15 @@ export function useAppData() {
     }
   }, [])
 
+  /** Per-profile backup status, derived from the stored backup history. */
+  const refreshBackups = useCallback(async () => {
+    try {
+      setBackups(await unwrap(window.pob.backupStatus()))
+    } catch {
+      /* shown as "no backup" */
+    }
+  }, [])
+
   const refresh = useCallback(async () => {
     try {
       const [list, st, s] = await Promise.all([
@@ -81,14 +92,14 @@ export function useAppData() {
       setProfiles(list)
       setStatuses(st)
       setSettings(s)
-      await Promise.all([refreshCatalog(), refreshNetwork()])
+      await Promise.all([refreshCatalog(), refreshNetwork(), refreshBackups()])
       setLoadError(null)
     } catch (error) {
       setLoadError(errorMessage(error))
     } finally {
       setLoading(false)
     }
-  }, [refreshCatalog, refreshNetwork])
+  }, [refreshCatalog, refreshNetwork, refreshBackups])
 
   useEffect(() => {
     void refresh()
@@ -174,6 +185,8 @@ export function useAppData() {
     network,
     reportedTimezones,
     refreshNetwork,
+    backups,
+    refreshBackups,
     startupNotes,
     dismissStartupNotes: () => setStartupNotes([]),
     loading,
