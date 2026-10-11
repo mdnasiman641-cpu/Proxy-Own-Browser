@@ -29,7 +29,7 @@ import { TabList, type AddTabOptions } from '../services/tabList'
 import type { LaunchPlan } from '../services/networkService'
 import { applyPageEmulation, isEmpty, type PageEmulation } from './pageEmulation'
 import { appWebPreferences, loadPage, lockDownAppContents } from './pages'
-import type { SessionManager } from './sessionManager'
+import { acceptLanguageForProfile, userAgentFor, type SessionManager } from './sessionManager'
 
 /** Height of the toolbar page (tab strip + address bar) at the top of a profile window, in DIPs. */
 export const TOOLBAR_HEIGHT = 88
@@ -84,6 +84,15 @@ export interface ProfileWindowDeps {
   planLaunch?: (profileId: string) => Promise<LaunchPlan>
   /** Resource-pressure check for the resource panel. */
   pressure?: (appMemoryMb: number) => ResourceUsage['pressure']
+}
+
+function emulationOf(profile: Profile, plan: Pick<LaunchPlan, 'timezone' | 'locale'>): PageEmulation {
+  return {
+    timezone: plan.timezone,
+    locale: plan.locale,
+    userAgent: userAgentFor(profile),
+    acceptLanguage: acceptLanguageForProfile(profile)
+  }
 }
 
 function timezoneLabel(plan: LaunchPlan): string | null {
@@ -258,22 +267,25 @@ export class ProfileWindowManager {
     if (timeChanged && this.deps.planLaunch) {
       try {
         const plan = await this.deps.planLaunch(profile.id)
-        await this.setEmulation(entry, plan)
+        entry.timezoneLabel = timezoneLabel(plan)
+        entry.notice = plan.warnings[0] ?? null
+        await this.setEmulation(entry, emulationOf(profile, plan))
       } catch (error) {
         // Keep the previous time zone in the open window and say why it was not changed.
         entry.notice = `Time zone not updated: ${error instanceof Error ? error.message : String(error)}`
+        await this.setEmulation(entry, emulationOf(profile, entry.emulation))
       }
+    } else if (browserChanged) {
+      await this.setEmulation(entry, emulationOf(profile, entry.emulation))
     }
     this.pushState(entry)
   }
 
-  /** Applies a new time zone/locale to every tab of an open window. */
-  private async setEmulation(entry: ProfileWindow, plan: LaunchPlan): Promise<void> {
-    entry.emulation = { timezone: plan.timezone, locale: plan.locale }
-    entry.timezoneLabel = timezoneLabel(plan)
-    entry.notice = plan.warnings[0] ?? null
+  /** Applies time zone, locale and User-Agent to every tab of an open window. */
+  private async setEmulation(entry: ProfileWindow, emulation: PageEmulation): Promise<void> {
+    entry.emulation = emulation
     await Promise.all(
-      entry.tabs.values().map((tab) => applyPageEmulation(tab.view.webContents, entry.emulation, this.deps.logger))
+      entry.tabs.values().map((tab) => applyPageEmulation(tab.view.webContents, emulation, this.deps.logger))
     )
   }
 
@@ -411,7 +423,7 @@ export class ProfileWindowManager {
       tabs: new TabList<Tab>(),
       shownTabId: null,
       toolbarReloads: 0,
-      emulation: { timezone: plan.timezone, locale: plan.locale },
+      emulation: emulationOf(profile, plan),
       timezoneLabel: timezoneLabel(plan),
       notice: plan.warnings[0] ?? null
     }
@@ -502,6 +514,7 @@ export class ProfileWindowManager {
     this.attachShortcuts(entry, view.webContents)
     if (entry.tabs.active === tab.id) this.showTab(entry, tab.id)
     if (isEmpty(entry.emulation)) {
+      view.webContents.setUserAgent(entry.emulation.userAgent)
       this.loadInTab(tab, url)
     } else {
       // The time zone must be in place before the first page script runs.
@@ -676,9 +689,7 @@ export class ProfileWindowManager {
       }
     })
     contents.on('did-create-window', (child) => {
-      if (!isEmpty(entry.emulation)) {
-        void applyPageEmulation(child.webContents, entry.emulation, this.deps.logger)
-      }
+      void applyPageEmulation(child.webContents, entry.emulation, this.deps.logger)
       this.guardWebContents(child.webContents, entry)
     })
     this.attachContextMenu(contents, entry)

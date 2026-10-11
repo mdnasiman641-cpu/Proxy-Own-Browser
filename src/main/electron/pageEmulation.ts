@@ -2,30 +2,43 @@ import type { WebContents } from 'electron'
 import type { Logger } from '../services/logger'
 
 /**
- * Time zone and locale for a profile's pages, applied with the Chrome DevTools Protocol
- * commands `Emulation.setTimezoneOverride` and `Emulation.setLocaleOverride` through Electron's
- * documented `webContents.debugger` API. This changes what JavaScript in the page sees
- * (Date, Intl); it does not change the Windows clock or any other application.
+ * Time zone, locale and language for a profile's pages, applied with the Chrome DevTools
+ * Protocol commands `Emulation.setTimezoneOverride`, `Emulation.setLocaleOverride` and
+ * `Emulation.setUserAgentOverride` (Accept-Language only — the User-Agent stays the profile's
+ * real one) through Electron's documented `webContents.debugger` API. This changes what
+ * JavaScript in the page sees (Date, Intl, navigator.language); it does not change the Windows
+ * clock or any other application.
  */
 export interface PageEmulation {
   timezone: string | null
   locale: string | null
+  /** The profile's User-Agent (real runtime version; see browserConfig.ts). */
+  userAgent: string
+  /** Accept-Language list for the profile language, e.g. "bn-BD,bn;q=0.9,en;q=0.8". */
+  acceptLanguage: string | null
 }
 
 const state = new WeakMap<WebContents, PageEmulation>()
 
-/** True when nothing needs to be overridden. */
+/** True when no DevTools-protocol override is needed (only the User-Agent, set directly). */
 export function isEmpty(emulation: PageEmulation): boolean {
   return !emulation.timezone && !emulation.locale
 }
 
 async function send(contents: WebContents, emulation: PageEmulation): Promise<void> {
   if (contents.isDestroyed()) return
+  if (contents.getUserAgent() !== emulation.userAgent) contents.setUserAgent(emulation.userAgent)
   const dbg = contents.debugger
+  if (isEmpty(emulation) && !dbg.isAttached()) return
   if (!dbg.isAttached()) dbg.attach('1.3')
   // An empty timezoneId / locale removes an earlier override.
   await dbg.sendCommand('Emulation.setTimezoneOverride', { timezoneId: emulation.timezone ?? '' })
   await dbg.sendCommand('Emulation.setLocaleOverride', emulation.locale ? { locale: emulation.locale } : {})
+  // navigator.language(s) follow the Accept-Language list; the User-Agent stays the profile's own.
+  await dbg.sendCommand(
+    'Emulation.setUserAgentOverride',
+    emulation.acceptLanguage ? { userAgent: emulation.userAgent, acceptLanguage: emulation.acceptLanguage } : { userAgent: emulation.userAgent }
+  )
 }
 
 /**
@@ -58,7 +71,6 @@ export async function applyPageEmulation(
       }
     })
   }
-  if (isEmpty(emulation) && !contents.debugger.isAttached()) return true
   try {
     await send(contents, emulation)
     return true

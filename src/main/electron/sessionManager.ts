@@ -27,6 +27,16 @@ export function plainChromeUserAgent(): string {
   return chromeUserAgent(app.userAgentFallback, app.getName())
 }
 
+/** The User-Agent a profile's pages use (always the installed runtime's real version). */
+export function userAgentFor(profile: Pick<Profile, 'browser'>): string {
+  return profile.browser.userAgent === 'chrome' ? plainChromeUserAgent() : defaultUserAgent()
+}
+
+/** Accept-Language list for a profile with a language set, or null to keep the default. */
+export function acceptLanguageForProfile(profile: Pick<Profile, 'browser'>): string | null {
+  return profile.browser.language ? acceptLanguageFor(profile.browser.language) : null
+}
+
 /**
  * Owns the Electron sessions for profiles. Each profile maps to exactly one persistent
  * partition, so cookies, localStorage, IndexedDB, cache and service workers stay isolated.
@@ -77,9 +87,8 @@ export class SessionManager {
 
   /** User-Agent and Accept-Language for the whole profile session (all tabs and requests). */
   private applyBrowserSettings(ses: Session, profile: Profile): void {
-    const ua = profile.browser.userAgent === 'chrome' ? plainChromeUserAgent() : defaultUserAgent()
     const language = profile.browser.language ?? app.getLocale()
-    ses.setUserAgent(ua, acceptLanguageFor(language))
+    ses.setUserAgent(userAgentFor(profile), acceptLanguageFor(language))
   }
 
   /** Applies changed browser settings to a session that is already in use. */
