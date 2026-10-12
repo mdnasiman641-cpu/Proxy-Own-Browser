@@ -10,7 +10,6 @@ import { DuplicateDialog } from '../components/DuplicateDialog'
 import { BackupStatusLine } from '../components/BackupStatusLine'
 import { NetworkBadge } from '../components/NetworkStatusView'
 import { useProfileEditor } from '../components/editor/ProfileEditor'
-import { useSharedProxyGuard } from '../components/SharedProxyGuard'
 import { BulkResultDialog, GroupChip, GroupSelect, StatusBadge, TagInput, TagList } from '../components/Bits'
 import { ConfirmDialog, Modal } from '../components/Modal'
 import { ProfileAvatar } from '../components/ProfileBadge'
@@ -71,7 +70,6 @@ export function ProfilesPage({ data, createRequested, onCreateHandled, wizardTem
   const [dialog, setDialog] = useState<Dialog>(null)
   const [busy, setBusy] = useState(false)
   const searchRef = useRef<HTMLInputElement>(null)
-  const { guard, dialog: sharedProxyDialog } = useSharedProxyGuard()
   const listRef = useRef<HTMLDivElement>(null)
   const { openEditor, openCreator } = useProfileEditor()
   const defaultGroupId = query.group !== 'all' && query.group !== 'none' ? query.group : null
@@ -704,7 +702,6 @@ export function ProfilesPage({ data, createRequested, onCreateHandled, wizardTem
         />
       )}
 
-      {sharedProxyDialog}
     </section>
   )
 }
