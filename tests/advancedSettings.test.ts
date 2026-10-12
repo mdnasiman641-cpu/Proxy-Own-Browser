@@ -438,3 +438,100 @@ describe('backup and restore of the advanced settings', () => {
     expect(restored.browser).toMatchObject({ language: 'de-DE', languageMode: 'manual' })
   })
 })
+
+describe('New Profile with the full settings', () => {
+  it('creates a profile with every setting the editor offers, and the editor reads them back', async () => {
+    const { blankProfile, draftFromProfile, draftToUpdate } = await import('../src/renderer/dashboard/components/editor/draft')
+    const { service, catalog } = await createService()
+    const group = catalog.createGroup({ name: 'Shops' })
+    const blank = blankProfile(group.id)
+    const draft = draftFromProfile(blank)
+    draft.name = '  New shop  '
+    draft.notes = 'note'
+    draft.color = '#16a34a'
+    draft.tags = ['fb', 'ads']
+    draft.startUrl = 'https://start.example/'
+    draft.proxy = { ...draft.proxy, enabled: true, protocol: 'http', host: '10.0.0.5', port: '8080', username: 'bob', password: 'secret' }
+    draft.browser = {
+      ...draft.browser,
+      timezoneMode: 'manual',
+      languageMode: 'manual',
+      userAgent: 'chrome',
+      webrtcPolicy: 'disable_non_proxied_udp',
+      geolocationMode: 'manual',
+      windowWidth: 1500,
+      zoomPercent: 110,
+      permissions: { ...draft.browser.permissions, camera: 'ask', notifications: 'allow' }
+    }
+    draft.timezoneManual = 'Asia/Dhaka'
+    draft.language = 'bn-BD'
+    draft.acceptLanguage = 'bn-BD,bn,en'
+    draft.geoLatitude = '23.8'
+    draft.geoLongitude = '90.4'
+    draft.startupUrls = 'https://a.example/\nhttps://b.example/'
+    draft.options = {
+      ...draft.options,
+      purpose: 'Ads',
+      icon: '🛒',
+      startupMode: 'urls',
+      confirmBeforeOpen: true,
+      windowMode: 'maximized',
+      showNameInTitle: false,
+      doNotTrack: true,
+      proxyLabel: 'Plan A',
+      proxyNotes: 'monthly'
+    }
+
+    const created = service.create(draftToUpdate(draft, blank) as never)
+    expect(created).toMatchObject({ name: 'New shop', notes: 'note', color: '#16a34a', groupId: group.id, startUrl: 'https://start.example/', tags: ['ads', 'fb'] })
+    expect(created.proxy).toMatchObject({ protocol: 'http', host: '10.0.0.5', port: 8080, username: 'bob', hasPassword: true })
+    expect(service.getProxyCredentials(created.id)?.password).toBe('secret')
+    expect(created.browser).toMatchObject({
+      timezoneMode: 'manual',
+      timezoneManual: 'Asia/Dhaka',
+      languageMode: 'manual',
+      language: 'bn-BD',
+      acceptLanguage: 'bn-BD,bn,en',
+      userAgent: 'chrome',
+      webrtcPolicy: 'disable_non_proxied_udp',
+      geolocationMode: 'manual',
+      geoLatitude: 23.8,
+      geoLongitude: 90.4,
+      windowWidth: 1500,
+      zoomPercent: 110
+    })
+    expect(created.browser.permissions).toMatchObject({ camera: 'ask', notifications: 'allow', microphone: 'block' })
+    expect(created.options).toMatchObject({
+      purpose: 'Ads',
+      icon: '🛒',
+      startupMode: 'urls',
+      startupUrls: ['https://a.example/', 'https://b.example/'],
+      confirmBeforeOpen: true,
+      windowMode: 'maximized',
+      showNameInTitle: false,
+      doNotTrack: true,
+      proxyLabel: 'Plan A',
+      proxyNotes: 'monthly'
+    })
+
+    // Opening the new profile in Edit shows what was entered: the editor would save the same
+    // values again (the stored password is never sent back to the UI).
+    const saved = service.get(created.id)
+    const reread = draftFromProfile(saved)
+    const { proxy: _sentProxy, ...sent } = draftToUpdate(draft, blank)
+    expect(draftToUpdate(reread, saved)).toEqual({ ...sent, tags: ['ads', 'fb'] })
+    expect(reread.proxy).toMatchObject({ enabled: true, protocol: 'http', host: '10.0.0.5', port: '8080', username: 'bob', password: '' })
+  })
+
+  it('an untouched New Profile gets the same defaults as before', async () => {
+    const { blankProfile, draftFromProfile, draftToUpdate } = await import('../src/renderer/dashboard/components/editor/draft')
+    const { service } = await createService()
+    const blank = blankProfile(null)
+    const draft = { ...draftFromProfile(blank), name: 'Plain' }
+    const created = service.create(draftToUpdate(draft, blank) as never)
+    const reference = service.create({ name: 'Reference' })
+    expect(created.browser).toEqual(reference.browser)
+    expect(created.options).toEqual(reference.options)
+    expect(created.proxy).toBeNull()
+  })
+})
