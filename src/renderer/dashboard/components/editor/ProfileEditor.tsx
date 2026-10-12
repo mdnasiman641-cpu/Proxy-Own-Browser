@@ -1,5 +1,5 @@
 import { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState, type ReactNode } from 'react'
-import type { Profile, RuntimeInfo } from '@shared/types'
+import type { Profile, ProfileInput, RuntimeInfo } from '@shared/types'
 import { Icon, type IconName } from '../../../common/Icon'
 import { errorMessage, unwrap } from '../../../common/ipc'
 import { useI18n } from '../../i18n'
@@ -9,7 +9,7 @@ import { StatusBadge } from '../Bits'
 import { ConfirmDialog } from '../Modal'
 import { ProfileAvatar } from '../ProfileBadge'
 import { useSharedProxyGuard } from '../SharedProxyGuard'
-import { draftFromProfile, draftKey, draftToUpdate, validateDraft, type EditorDraft } from './draft'
+import { blankProfile, draftFromProfile, draftKey, draftToUpdate, validateDraft, type EditorDraft } from './draft'
 import { DiagnosticsSection, ExtensionsCookiesSection, SummaryPanel } from './live'
 import { AdvancedSection, BrowserSection, GeneralSection, HardwareSection, PrivacySection, ProxySection, type SectionProps } from './sections'
 
@@ -49,6 +49,8 @@ interface EditorProps {
   profile: Profile
   initialTab: EditorTab
   onClose: () => void
+  /** New Profile: `profile` is a blank template and Save creates the profile. */
+  creating?: boolean
 }
 
 /**
@@ -57,7 +59,7 @@ interface EditorProps {
  * always visible. Settings are saved together; extensions, site data and diagnostics act
  * immediately and say so.
  */
-export function ProfileEditor({ data, profile, initialTab, onClose }: EditorProps) {
+export function ProfileEditor({ data, profile, initialTab, onClose, creating = false }: EditorProps) {
   const { t } = useI18n()
   const [tab, setTab] = useState<EditorTab>(initialTab)
   const [base, setBase] = useState<EditorDraft>(() => draftFromProfile(profile))
@@ -71,8 +73,19 @@ export function ProfileEditor({ data, profile, initialTab, onClose }: EditorProp
   const [needsReopen, setNeedsReopen] = useState(false)
   const { guard, dialog: guardDialog } = useSharedProxyGuard()
   const contentRef = useRef<HTMLDivElement>(null)
+  /** New Profile: whether the user chose a time zone mode (otherwise a proxy means Automatic). */
+  const tzTouched = useRef(false)
+  const tabs = creating ? TABS.filter((x) => x.id !== 'diagnostics') : TABS
 
   const dirty = draftKey(draft) !== draftKey(base)
+
+  // Same default as creating a profile elsewhere: a profile with a proxy uses the time zone of
+  // the proxy's IP unless a time zone mode was chosen.
+  useEffect(() => {
+    if (!creating || tzTouched.current) return
+    const wanted = draft.proxy.enabled ? 'auto' : 'off'
+    if (draft.browser.timezoneMode !== wanted) setDraft((d) => ({ ...d, browser: { ...d.browser, timezoneMode: wanted } }))
+  }, [creating, draft.proxy.enabled, draft.browser.timezoneMode])
   const errors = useMemo(() => validateDraft(draft), [draft])
   const errorCount = Object.keys(errors).length
   const running = (data.statuses[profile.id] ?? 'closed') !== 'closed'
@@ -115,6 +128,14 @@ export function ProfileEditor({ data, profile, initialTab, onClose }: EditorProp
     setSaving(true)
     setSaveError(null)
     try {
+      if (creating) {
+        await guard(async (options) => {
+          const created = await data.createProfile(draftToUpdate(draft, profile) as ProfileInput, options)
+          data.notify('success', t('profiles.created', { name: created.name }))
+          onClose()
+        })
+        return
+      }
       await guard(async (options) => {
         const before = profile
         const saved = await data.updateProfile(profile.id, draftToUpdate(draft, profile), options)
@@ -153,34 +174,50 @@ export function ProfileEditor({ data, profile, initialTab, onClose }: EditorProp
 
   const sectionProps: SectionProps = {
     draft,
-    update: (fn) => setDraft((d) => fn(d)),
+    update: (fn) =>
+      setDraft((d) => {
+        const next = fn(d)
+        if (next.browser.timezoneMode !== d.browser.timezoneMode) tzTouched.current = true
+        return next
+      }),
     errors: showErrors ? errors : {},
     profile,
     data,
-    runtime
+    runtime,
+    creating
   }
   const tabErrors = (id: EditorTab): number => (showErrors ? Object.keys(errors).filter((k) => ERROR_TAB[k] === id).length : 0)
-  const current = TABS.find((x) => x.id === tab)!
+  const current = tabs.find((x) => x.id === tab) ?? tabs[0]!
 
   return (
     <div className="editor-backdrop">
-      <div className="editor" role="dialog" aria-modal="true" aria-label={t('ed.title', { name: profile.name })} data-testid="profile-editor">
+      <div
+        className="editor"
+        role="dialog"
+        aria-modal="true"
+        aria-label={creating ? t('profiles.new') : t('ed.title', { name: profile.name })}
+        data-testid={creating ? 'profile-creator' : 'profile-editor'}
+      >
         <header className="editor-header">
-          <ProfileAvatar profile={profile} size={36} />
+          <ProfileAvatar profile={{ ...profile, name: draft.name || '?', color: draft.color, options: draft.options }} size={36} />
           <div className="editor-title">
-            <h2>{t('ed.title', { name: profile.name })}</h2>
-            <span className="small muted">
-              <StatusBadge status={data.statuses[profile.id] ?? 'closed'} /> · <span className="mono">{profile.id}</span>
-            </span>
+            <h2>{creating ? t('profiles.new') : t('ed.title', { name: profile.name })}</h2>
+            {creating ? (
+              <span className="small muted">{t('ed.createHint')}</span>
+            ) : (
+              <span className="small muted">
+                <StatusBadge status={data.statuses[profile.id] ?? 'closed'} /> · <span className="mono">{profile.id}</span>
+              </span>
+            )}
           </div>
           <button type="button" className="icon-button" onClick={requestClose} aria-label={t('common.close')}>
             <Icon name="close" />
           </button>
         </header>
 
-        <div className="editor-body">
+        <div className={`editor-body ${creating ? 'no-summary' : ''}`}>
           <nav className="editor-nav" aria-label={t('ed.categories')}>
-            {TABS.map((x) => (
+            {tabs.map((x) => (
               <button
                 key={x.id}
                 type="button"
@@ -198,7 +235,7 @@ export function ProfileEditor({ data, profile, initialTab, onClose }: EditorProp
 
           <div className="editor-content" ref={contentRef} data-testid={`editor-tab-${tab}`}>
             <h2 className="editor-tab-title">{t(current.label)}</h2>
-            {current.live && <div className="alert info small">{t('ed.liveNote')}</div>}
+            {current.live && !creating && <div className="alert info small">{t('ed.liveNote')}</div>}
             {needsReopen && (
               <div className="alert warning small" data-testid="reopen-notice">
                 {t('ed.reopenNeeded')}{' '}
@@ -212,17 +249,22 @@ export function ProfileEditor({ data, profile, initialTab, onClose }: EditorProp
             {tab === 'privacy' && <PrivacySection {...sectionProps} />}
             {tab === 'browser' && <BrowserSection {...sectionProps} />}
             {tab === 'hardware' && <HardwareSection {...sectionProps} />}
-            {tab === 'extensions' && <ExtensionsCookiesSection profile={profile} data={data} />}
+            {tab === 'extensions' &&
+              (creating ? (
+                <div className="alert info small" data-testid="create-extensions-note">{t('ed.createExtensions')}</div>
+              ) : (
+                <ExtensionsCookiesSection profile={profile} data={data} />
+              ))}
             {tab === 'advanced' && <AdvancedSection {...sectionProps} />}
-            {tab === 'diagnostics' && <DiagnosticsSection profile={profile} data={data} />}
+            {tab === 'diagnostics' && !creating && <DiagnosticsSection profile={profile} data={data} />}
           </div>
 
-          <SummaryPanel profile={profile} data={data} dirty={dirty} refreshKey={`${profile.updatedAt}|${savedAt}`} />
+          {!creating && <SummaryPanel profile={profile} data={data} dirty={dirty} refreshKey={`${profile.updatedAt}|${savedAt}`} />}
         </div>
 
         <footer className="editor-footer">
           <span className={`small ${dirty ? 'warn' : 'muted'}`} data-testid="editor-dirty">
-            {saving ? t('common.saving') : dirty ? t('ed.unsaved') : t('ed.allSaved')}
+            {saving ? t('common.saving') : creating ? t('ed.createDefaults') : dirty ? t('ed.unsaved') : t('ed.allSaved')}
           </span>
           {saveError && <span className="field-error" role="alert">{saveError}</span>}
           <div className="editor-footer-actions">
@@ -232,8 +274,14 @@ export function ProfileEditor({ data, profile, initialTab, onClose }: EditorProp
             <button type="button" className="button" onClick={requestClose} disabled={saving}>
               {dirty ? t('common.cancel') : t('common.close')}
             </button>
-            <button type="button" className="button primary" disabled={saving || !dirty} onClick={() => void save()} data-testid="editor-save">
-              {saving ? t('common.saving') : t('ed.save')}
+            <button
+              type="button"
+              className="button primary"
+              disabled={saving || (!creating && !dirty)}
+              onClick={() => void save()}
+              data-testid="editor-save"
+            >
+              {saving ? t('common.saving') : creating ? t('form.create') : t('ed.save')}
             </button>
           </div>
         </footer>
@@ -261,9 +309,11 @@ export function ProfileEditor({ data, profile, initialTab, onClose }: EditorProp
 
 interface EditorContextValue {
   openEditor: (profileId: string, tab?: EditorTab) => void
+  /** Opens New Profile with the full settings, optionally in a group. */
+  openCreator: (groupId?: string | null) => void
 }
 
-const EditorContext = createContext<EditorContextValue>({ openEditor: () => {} })
+const EditorContext = createContext<EditorContextValue>({ openEditor: () => {}, openCreator: () => {} })
 
 export function useProfileEditor(): EditorContextValue {
   return useContext(EditorContext)
@@ -272,8 +322,10 @@ export function useProfileEditor(): EditorContextValue {
 /** Holds the one open editor for the whole dashboard. */
 export function ProfileEditorHost({ data, children }: { data: AppData; children: ReactNode }) {
   const [open, setOpen] = useState<{ id: string; tab: EditorTab } | null>(null)
+  const [creating, setCreating] = useState<{ groupId: string | null; key: number } | null>(null)
   const openEditor = useCallback((id: string, tab: EditorTab = 'general') => setOpen({ id, tab }), [])
-  const value = useMemo(() => ({ openEditor }), [openEditor])
+  const openCreator = useCallback((groupId: string | null = null) => setCreating({ groupId, key: Date.now() }), [])
+  const value = useMemo(() => ({ openEditor, openCreator }), [openEditor, openCreator])
   const profile = open ? data.profiles.find((p) => p.id === open.id) : undefined
   useEffect(() => {
     // The profile was deleted while its editor was open.
@@ -283,6 +335,16 @@ export function ProfileEditorHost({ data, children }: { data: AppData; children:
     <EditorContext.Provider value={value}>
       {children}
       {open && profile && <ProfileEditor key={open.id} data={data} profile={profile} initialTab={open.tab} onClose={() => setOpen(null)} />}
+      {creating && (
+        <ProfileEditor
+          key={`new-${creating.key}`}
+          data={data}
+          profile={blankProfile(creating.groupId)}
+          initialTab="general"
+          creating
+          onClose={() => setCreating(null)}
+        />
+      )}
     </EditorContext.Provider>
   )
 }

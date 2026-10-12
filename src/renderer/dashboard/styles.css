@@ -703,3 +703,9 @@ kbd {
   .editor-body { grid-template-columns: minmax(0, 1fr); grid-template-rows: auto minmax(0, 1fr) minmax(0, 40%); }
   .ed-summary { border-left: 0; border-top: 1px solid var(--border); }
 }
+
+/* New Profile: the same editor without the summary column (there is no saved profile yet). */
+.editor-body.no-summary { grid-template-columns: 210px minmax(0, 1fr); }
+@media (max-width: 980px) {
+  .editor-body.no-summary { grid-template-columns: minmax(0, 1fr); }
+}

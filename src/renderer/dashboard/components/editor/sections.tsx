@@ -41,6 +41,8 @@ export interface SectionProps {
   profile: Profile
   data: AppData
   runtime: RuntimeInfo | null
+  /** The profile does not exist yet (New Profile): parts that need a saved profile are hidden. */
+  creating: boolean
 }
 
 const setBrowser = <K extends keyof BrowserConfig>(key: K, value: BrowserConfig[K]) => (d: EditorDraft): EditorDraft => ({
@@ -58,7 +60,7 @@ const setProxy = <K extends keyof ProxyDraft>(key: K, value: ProxyDraft[K]) => (
 
 // ---------------------------------------------------------------- General
 
-export function GeneralSection({ draft, update, errors, profile, data }: SectionProps) {
+export function GeneralSection({ draft, update, errors, profile, data, creating }: SectionProps) {
   const { t, formatDate } = useI18n()
   const status = data.statuses[profile.id] ?? 'closed'
   const [copied, setCopied] = useState(false)
@@ -68,6 +70,7 @@ export function GeneralSection({ draft, update, errors, profile, data }: Section
         <Field label={t('form.name')} error={errors.name}>
           <input value={draft.name} maxLength={LIMITS.nameMax} onChange={(e) => update((d) => ({ ...d, name: e.target.value }))} data-testid="ed-name" />
         </Field>
+        {!creating && (
         <div className="ed-row">
           <Fact
             label={t('details.id')}
@@ -91,6 +94,7 @@ export function GeneralSection({ draft, update, errors, profile, data }: Section
           />
           <Fact label={t('ed.status')} value={<StatusBadge status={status} />} />
         </div>
+        )}
         <div className="grid-2">
           <Field label={t('ed.purpose')} help={t('ed.purposeHelp')}>
             <input
@@ -131,11 +135,13 @@ export function GeneralSection({ draft, update, errors, profile, data }: Section
         <Field label={t('form.notes')} error={errors.notes}>
           <textarea value={draft.notes} rows={3} maxLength={LIMITS.notesMax} onChange={(e) => update((d) => ({ ...d, notes: e.target.value }))} />
         </Field>
-        <dl className="ed-facts">
-          <Fact label={t('details.created')} value={formatDate(profile.createdAt)} />
-          <Fact label={t('profiles.col.lastOpened')} value={formatDate(profile.lastOpenedAt)} />
-          <Fact label={t('ed.updated')} value={formatDate(profile.updatedAt)} />
-        </dl>
+        {!creating && (
+          <dl className="ed-facts">
+            <Fact label={t('details.created')} value={formatDate(profile.createdAt)} />
+            <Fact label={t('profiles.col.lastOpened')} value={formatDate(profile.lastOpenedAt)} />
+            <Fact label={t('ed.updated')} value={formatDate(profile.updatedAt)} />
+          </dl>
+        )}
       </Section>
 
       <Section title={t('ed.general.opening')}>
@@ -154,7 +160,7 @@ export function GeneralSection({ draft, update, errors, profile, data }: Section
 
 // ---------------------------------------------------------------- Proxy
 
-export function ProxySection({ draft, update, errors, profile, data }: SectionProps) {
+export function ProxySection({ draft, update, errors, profile, data, creating }: SectionProps) {
   const { t, formatDate } = useI18n()
   const p = draft.proxy
   const [paste, setPaste] = useState('')
@@ -172,7 +178,7 @@ export function ProxySection({ draft, update, errors, profile, data }: SectionPr
     setTesting(true)
     setTest(null)
     try {
-      setTest({ key, result: await unwrap(window.pob.testProxy(profile.id, buildProxyInput(draft, profile))) })
+      setTest({ key, result: await unwrap(window.pob.testProxy(creating ? null : profile.id, buildProxyInput(draft, profile))) })
     } catch (e) {
       setTest({ key, error: errorMessage(e) })
     } finally {
@@ -292,6 +298,7 @@ export function ProxySection({ draft, update, errors, profile, data }: SectionPr
         {current?.error && <div className="alert error">{current.error}</div>}
       </Section>
 
+      {!creating && (
       <Section title={t('ed.proxy.status')} help={t('ed.proxy.statusHelp')}>
         <div className="button-row">
           <button type="button" className="button small" disabled={refreshing !== null} onClick={() => void refresh(false)} data-testid="ed-refresh-ip">
@@ -315,13 +322,14 @@ export function ProxySection({ draft, update, errors, profile, data }: SectionPr
           reported={data.reportedTimezones[profile.id]}
         />
       </Section>
+      )}
     </>
   )
 }
 
 // ---------------------------------------------------------------- Privacy & Network
 
-export function PrivacySection({ draft, update, errors, profile, data }: SectionProps) {
+export function PrivacySection({ draft, update, errors, profile, data, creating }: SectionProps) {
   const { t, formatDate } = useI18n()
   const zones = useMemo(() => supportedTimeZones(), [])
   const network = data.network[profile.id]
@@ -413,6 +421,7 @@ export function PrivacySection({ draft, update, errors, profile, data }: Section
         <Toggle checked={draft.options.doNotTrack} onChange={(v) => update(setOption('doNotTrack', v))} label={t('ed.dnt.label')} help={t('ed.dnt.help')} testId="ed-dnt" />
       </Section>
 
+      {!creating && (
       <Section title={t('ed.privacy.network')}>
         <dl className="ed-facts">
           <Fact label={t('net.proxyConnection')} value={network ? t(`net.state.${network.proxy.ok ? 'ok' : 'failed'}` as TKey) : t('net.never')} />
@@ -421,6 +430,7 @@ export function PrivacySection({ draft, update, errors, profile, data }: Section
         </dl>
         <p className="ed-help">{t('ed.privacy.diagHint')}</p>
       </Section>
+      )}
     </>
   )
 }
@@ -537,7 +547,7 @@ export function BrowserSection({ draft, update, errors, profile, data, runtime }
 
 // ---------------------------------------------------------------- Hardware & Permissions
 
-export function HardwareSection({ draft, update, profile, data, runtime }: SectionProps) {
+export function HardwareSection({ draft, update, profile, data, runtime, creating }: SectionProps) {
   const { t, formatNumber } = useI18n()
   const [reported, setReported] = useState<ReportedHardware | null>(null)
   const [reading, setReading] = useState(false)
@@ -580,6 +590,7 @@ export function HardwareSection({ draft, update, profile, data, runtime }: Secti
         </dl>
       </Section>
 
+      {!creating && (
       <Section title={t('ed.hw.reported')} help={t('ed.hw.reportedHelp')} testId="ed-reported-hardware">
         <button type="button" className="button small" disabled={!running || reading} onClick={() => void read()} title={running ? undefined : t('diag.openFirst')}>
           <Icon name="reload" size={16} /> {reading ? t('diag.running') : t('ed.hw.read')}
@@ -596,6 +607,7 @@ export function HardwareSection({ draft, update, profile, data, runtime }: Secti
           </dl>
         )}
       </Section>
+      )}
 
       <Section title={t('browser.permissions')} help={t('ed.perm.help')} testId="ed-permissions">
         <table className="table ed-perm-table">
@@ -640,7 +652,7 @@ export function HardwareSection({ draft, update, profile, data, runtime }: Secti
 
 // ---------------------------------------------------------------- Other / Advanced
 
-export function AdvancedSection({ draft, update, errors, profile, data }: SectionProps) {
+export function AdvancedSection({ draft, update, errors, profile, data, creating }: SectionProps) {
   const { t } = useI18n()
   const o = draft.options
   const [exporting, setExporting] = useState(false)
@@ -716,12 +728,14 @@ export function AdvancedSection({ draft, update, errors, profile, data }: Sectio
         <Unsupported label={t('ed.adv.launchArgs')} reason={t('ed.adv.launchArgsWhy')} />
       </Section>
 
+      {!creating && (
       <Section title={t('ed.adv.export')} help={t('ed.adv.exportHelp')}>
         <button type="button" className="button small" disabled={exporting} onClick={() => void exportConfig()}>
           <Icon name="download" size={16} /> {t('ed.adv.exportButton')}
         </button>
         {exportNote && <p className="ed-help">{exportNote}</p>}
       </Section>
+      )}
     </>
   )
 }

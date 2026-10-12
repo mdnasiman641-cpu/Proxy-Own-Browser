@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState, type KeyboardEvent } from 'react'
 import { DEFAULT_QUERY, SORT_KEYS, filterAndSortProfiles, type ProfileQuery, type SortKey } from '@shared/profileQuery'
 import { describeProxy } from '@shared/proxy'
-import type { BulkSummary, Profile, ProfileInput } from '@shared/types'
+import type { BulkSummary, Profile } from '@shared/types'
 import { Icon } from '../../common/Icon'
 import { errorMessage, unwrap } from '../../common/ipc'
 import { BackupChoiceDialog, FullBackupDialog } from '../components/BackupDialogs'
@@ -14,7 +14,6 @@ import { useSharedProxyGuard } from '../components/SharedProxyGuard'
 import { BulkResultDialog, GroupChip, GroupSelect, StatusBadge, TagInput, TagList } from '../components/Bits'
 import { ConfirmDialog, Modal } from '../components/Modal'
 import { ProfileAvatar } from '../components/ProfileBadge'
-import { ProfileForm } from '../components/ProfileForm'
 import { useI18n } from '../i18n'
 import type { TKey } from '../strings'
 import type { AppData } from '../useAppData'
@@ -32,7 +31,6 @@ interface Props {
 
 type View = 'table' | 'cards'
 type Dialog =
-  | { kind: 'create' }
   | { kind: 'delete-one'; profile: Profile }
   | { kind: 'bulk-delete' }
   | { kind: 'bulk-move' }
@@ -75,7 +73,8 @@ export function ProfilesPage({ data, createRequested, onCreateHandled, wizardTem
   const searchRef = useRef<HTMLInputElement>(null)
   const { guard, dialog: sharedProxyDialog } = useSharedProxyGuard()
   const listRef = useRef<HTMLDivElement>(null)
-  const { openEditor } = useProfileEditor()
+  const { openEditor, openCreator } = useProfileEditor()
+  const defaultGroupId = query.group !== 'all' && query.group !== 'none' ? query.group : null
 
   const groupById = useMemo(() => new Map(data.groups.map((g) => [g.id, g])), [data.groups])
   const visible = useMemo(
@@ -92,10 +91,10 @@ export function ProfilesPage({ data, createRequested, onCreateHandled, wizardTem
 
   useEffect(() => {
     if (createRequested) {
-      setDialog({ kind: 'create' })
+      openCreator(defaultGroupId)
       onCreateHandled()
     }
-  }, [createRequested, onCreateHandled])
+  }, [createRequested, onCreateHandled, openCreator, defaultGroupId])
 
   useEffect(() => {
     if (wizardTemplateId !== null) {
@@ -185,7 +184,8 @@ export function ProfilesPage({ data, createRequested, onCreateHandled, wizardTem
   // Page-level keyboard shortcuts (ignored while typing or while a dialog is open).
   useEffect(() => {
     const onKey = (e: globalThis.KeyboardEvent): void => {
-      if (dialog || isTyping(e.target)) return
+      // The profile editor (or New Profile) handles its own keys.
+      if (dialog || isTyping(e.target) || document.querySelector('.editor-backdrop')) return
       const ctrl = e.ctrlKey || e.metaKey
       if (e.key === '/' || (ctrl && e.key.toLowerCase() === 'f')) {
         e.preventDefault()
@@ -195,7 +195,7 @@ export function ProfilesPage({ data, createRequested, onCreateHandled, wizardTem
         selectAllVisible()
       } else if (ctrl && e.key.toLowerCase() === 'n') {
         e.preventDefault()
-        setDialog({ kind: 'create' })
+        openCreator(defaultGroupId)
       } else if (e.key === 'Escape' && selection.length) {
         clearSelection()
       } else if (e.key === 'Delete' && selection.length) {
@@ -204,7 +204,7 @@ export function ProfilesPage({ data, createRequested, onCreateHandled, wizardTem
     }
     window.addEventListener('keydown', onKey)
     return () => window.removeEventListener('keydown', onKey)
-  }, [dialog, selection.length, selectAllVisible, clearSelection])
+  }, [dialog, selection.length, selectAllVisible, clearSelection, openCreator, defaultGroupId])
 
   /** Row keys: Enter opens, Space selects, arrows move between rows. */
   const onRowKey = (e: KeyboardEvent<HTMLElement>, profile: Profile): void => {
@@ -322,7 +322,7 @@ export function ProfilesPage({ data, createRequested, onCreateHandled, wizardTem
           <button type="button" className="button" onClick={() => setDialog({ kind: 'wizard', templateId: null })}>
             <Icon name="layers" /> {t('profiles.createSeveral')}
           </button>
-          <button type="button" className="button primary" onClick={() => setDialog({ kind: 'create' })}>
+          <button type="button" className="button primary" onClick={() => openCreator(defaultGroupId)} data-testid="new-profile">
             <Icon name="plus" /> {t('profiles.new')}
           </button>
         </div>
@@ -485,7 +485,7 @@ export function ProfilesPage({ data, createRequested, onCreateHandled, wizardTem
           {data.profiles.length === 0 ? (
             <div className="empty">
               <p>{t('profiles.empty')}</p>
-              <button type="button" className="button primary" onClick={() => setDialog({ kind: 'create' })}>
+              <button type="button" className="button primary" onClick={() => openCreator(defaultGroupId)}>
                 {t('profiles.emptyCta')}
               </button>
             </div>
@@ -608,25 +608,6 @@ export function ProfilesPage({ data, createRequested, onCreateHandled, wizardTem
             <Icon name="close" />
           </button>
         </div>
-      )}
-
-      {dialog?.kind === 'create' && (
-        <Modal title={t('profiles.new')} onClose={() => setDialog(null)}>
-          <ProfileForm
-            submitLabel={t('form.create')}
-            groups={data.groups}
-            tagSuggestions={data.tags}
-            defaultGroupId={query.group !== 'all' && query.group !== 'none' ? query.group : null}
-            onCancel={() => setDialog(null)}
-            onSubmit={(input) =>
-              guard(async (options) => {
-                const profile = await data.createProfile(input as ProfileInput, options)
-                data.notify('success', t('profiles.created', { name: profile.name }))
-                setDialog(null)
-              })
-            }
-          />
-        </Modal>
       )}
 
       {dialog?.kind === 'delete-one' && (

@@ -250,6 +250,34 @@ async function editorUiChecks(ctx: SmokeContext, check: Check, id: string, parti
   await viaDashboard(ctx, `window.pob.updateProfile(${JSON.stringify(id)}, { name: ${JSON.stringify(EDITOR_PROFILE)} })`)
   await dash.executeJavaScript(`document.querySelector('.editor-header .icon-button')?.click()`)
   await waitFor(async () => !(await dash.executeJavaScript(`Boolean(document.querySelector('[data-testid="profile-editor"]'))`)))
+
+  // New Profile uses the same settings screen (without the parts that need a saved profile).
+  await dash.executeJavaScript(`document.querySelector('[data-testid="new-profile"]').click()`)
+  const creatorShown = await pageHas(dash, '[data-testid="profile-creator"]')
+  const creatorTabs = (await dash.executeJavaScript(`[...document.querySelectorAll('[data-testid="profile-creator"] [data-editor-tab]')].map((b) => b.dataset.editorTab).join(',')`)) as string
+  await dash.executeJavaScript(`(() => {
+    const input = document.querySelector('[data-testid="ed-name"]')
+    const setter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value').set
+    setter.call(input, 'Smoke Created')
+    input.dispatchEvent(new Event('input', { bubbles: true }))
+  })()`)
+  await dash.executeJavaScript(`document.querySelector('[data-editor-tab="privacy"]').click()`)
+  await pageHas(dash, '[data-testid="ed-dnt"]')
+  await dash.executeJavaScript(`document.querySelector('[data-testid="ed-dnt"]').click()`)
+  await dash.executeJavaScript(`document.querySelector('[data-editor-tab="hardware"]').click()`)
+  await pageHas(dash, '[data-testid="perm-camera-ask"]')
+  await dash.executeJavaScript(`document.querySelector('[data-testid="perm-camera-ask"]').click()`)
+  await dash.executeJavaScript(`document.querySelector('[data-testid="editor-save"]').click()`)
+  const createdOk = await waitFor(() => ctx.profiles.list().some((p) => p.name === 'Smoke Created'))
+  const made = ctx.profiles.list().find((p) => p.name === 'Smoke Created')
+  const closed = await waitFor(async () => !(await dash.executeJavaScript(`Boolean(document.querySelector('[data-testid="profile-creator"]'))`)))
+  check(
+    'New Profile offers the editor’s settings and saves them on create',
+    creatorShown && creatorTabs === 'general,proxy,privacy,browser,hardware,extensions,advanced' && createdOk && closed &&
+      made?.options.doNotTrack === true && made.browser.permissions.camera === 'ask' && made.browser.permissions.microphone === 'block',
+    `${creatorTabs} ${JSON.stringify({ dnt: made?.options.doNotTrack, camera: made?.browser.permissions.camera })}`
+  )
+  if (made) ctx.profiles.delete(made.id)
 }
 
 /** After the restart: settings persisted, extension and tabs come back when the profile opens. */

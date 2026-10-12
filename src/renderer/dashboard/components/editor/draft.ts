@@ -1,14 +1,15 @@
 import {
+  DEFAULT_BROWSER_CONFIG,
   acceptLanguageSchema,
   customUserAgentSchema,
   isValidLanguageTag,
   isValidTimeZone,
   type BrowserConfig
 } from '@shared/browserConfig'
-import { folderPathSchema, startupUrlSchema, type ProfileOptions } from '@shared/profileOptions'
+import { DEFAULT_PROFILE_OPTIONS, folderPathSchema, startupUrlSchema, type ProfileOptions } from '@shared/profileOptions'
 import { proxyInputChanges } from '@shared/proxy'
 import type { Profile, ProfileUpdate, ProxyInput, ProxyProtocol } from '@shared/types'
-import { LIMITS, isHttpUrl, isValidProxyHost } from '@shared/validation'
+import { LIMITS, PROFILE_COLORS, isHttpUrl, isValidProxyHost } from '@shared/validation'
 import type { TKey } from '../../strings'
 
 export interface ProxyDraft {
@@ -41,6 +42,26 @@ export interface EditorDraft {
   geoLatitude: string
   geoLongitude: string
   startupUrls: string
+}
+
+/** The starting point of New Profile: the same defaults a profile created without settings gets. */
+export function blankProfile(groupId: string | null): Profile {
+  return {
+    id: '',
+    name: '',
+    notes: '',
+    color: PROFILE_COLORS[0]!,
+    startUrl: null,
+    partition: '',
+    proxy: null,
+    groupId,
+    tags: [],
+    browser: { ...DEFAULT_BROWSER_CONFIG, permissions: { ...DEFAULT_BROWSER_CONFIG.permissions } },
+    options: { ...DEFAULT_PROFILE_OPTIONS, startupUrls: [] },
+    createdAt: '',
+    updatedAt: '',
+    lastOpenedAt: null
+  }
 }
 
 export function draftFromProfile(profile: Profile): EditorDraft {
