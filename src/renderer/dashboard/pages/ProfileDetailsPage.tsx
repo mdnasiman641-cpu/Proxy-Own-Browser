@@ -1,16 +1,4 @@
-import { useCallback, useEffect, useMemo, useState, type FormEvent } from 'react'
-import {
-  BROWSER_LIMITS,
-  COMMON_LANGUAGES,
-  CONFIGURABLE_PERMISSIONS,
-  isValidLanguageTag,
-  isValidTimeZone,
-  supportedTimeZones,
-  WEBRTC_POLICIES,
-  type BrowserConfig,
-  type ConfigurablePermission,
-  type TimezoneMode
-} from '@shared/browserConfig'
+import { Fragment, useCallback, useEffect, useState } from 'react'
 import type { BackupHistoryEntry, Profile, RuntimeInfo } from '@shared/types'
 import { Icon } from '../../common/Icon'
 import { errorMessage, unwrap } from '../../common/ipc'
@@ -18,24 +6,13 @@ import { FullBackupDialog, formatBytes } from '../components/BackupDialogs'
 import { BackupStatusFacts } from '../components/BackupStatusLine'
 import { GroupChip, StatusBadge, TagList } from '../components/Bits'
 import { DuplicateDialog } from '../components/DuplicateDialog'
-import { Modal } from '../components/Modal'
-import { DiagnosticsPanel } from '../components/DiagnosticsPanel'
 import { NetworkPanel } from '../components/NetworkStatusView'
 import { ProfileAvatar } from '../components/ProfileBadge'
-import { ProfileForm } from '../components/ProfileForm'
-import { useSharedProxyGuard } from '../components/SharedProxyGuard'
+import { useProfileEditor, type EditorTab } from '../components/editor/ProfileEditor'
 import { useI18n } from '../i18n'
 import type { TKey } from '../strings'
 import type { AppData } from '../useAppData'
 
-const PERMISSION_LABEL: Record<ConfigurablePermission, TKey> = {
-  notifications: 'perm.notifications',
-  media: 'perm.media',
-  geolocation: 'perm.geolocation',
-  'clipboard-read': 'perm.clipboard'
-}
-
-const ZOOM_STEPS = [50, 67, 75, 80, 90, 100, 110, 125, 150, 175, 200, 250, 300]
 
 interface Props {
   data: AppData
@@ -43,7 +20,7 @@ interface Props {
   onBack: () => void
 }
 
-type Dialog = 'edit' | 'duplicate' | 'full-backup' | null
+type Dialog = 'duplicate' | 'full-backup' | null
 
 /** Everything about one profile: status, network and IP, time zone, browser settings, backups. */
 export function ProfileDetailsPage({ data, profileId, onBack }: Props) {
@@ -53,7 +30,7 @@ export function ProfileDetailsPage({ data, profileId, onBack }: Props) {
   const [runtime, setRuntime] = useState<RuntimeInfo | null>(null)
   const [history, setHistory] = useState<BackupHistoryEntry[]>([])
   const [dialog, setDialog] = useState<Dialog>(null)
-  const { guard, dialog: sharedDialog } = useSharedProxyGuard()
+  const { openEditor } = useProfileEditor()
   const { refreshBackups } = data
 
   const loadHistory = useCallback(() => {
@@ -133,7 +110,7 @@ export function ProfileDetailsPage({ data, profileId, onBack }: Props) {
           <button type="button" className="button primary" onClick={() => void data.openProfile(profile)}>
             <Icon name="open" /> {running ? t('common.focus') : t('common.open')}
           </button>
-          <button type="button" className="button" onClick={() => setDialog('edit')}>
+          <button type="button" className="button" onClick={() => openEditor(profile.id)} data-testid="details-edit">
             <Icon name="edit" /> {t('common.edit')}
           </button>
           <button type="button" className="button" onClick={() => setDialog('duplicate')}>
@@ -152,17 +129,7 @@ export function ProfileDetailsPage({ data, profileId, onBack }: Props) {
             onCheck={() => void check()}
             geoEnabled={data.settings?.ipGeolocation ?? true}
           />
-          <BrowserSettingsPanel
-            key={profile.updatedAt}
-            profile={profile}
-            runtime={runtime}
-            detectedTz={data.network[profile.id]?.lastValidTimezoneCurrent ? data.network[profile.id]!.lastValidTimezone : null}
-            running={running}
-            onSave={async (browser) => {
-              await data.updateProfile(profile.id, { browser })
-              data.notify('success', t('details.saved'))
-            }}
-          />
+          <ConfigCard profile={profile} onEdit={(tab) => openEditor(profile.id, tab)} />
         </div>
         <div className="details-col">
           <div className="panel">
@@ -203,14 +170,6 @@ export function ProfileDetailsPage({ data, profileId, onBack }: Props) {
             )}
           </div>
 
-          <DiagnosticsPanel
-            profile={profile}
-            running={running}
-            onRestrictWebRtc={async () => {
-              await data.updateProfile(profile.id, { browser: { webrtcPolicy: 'disable_non_proxied_udp' } })
-              data.notify('success', t('details.saved'))
-            }}
-          />
 
           <StoragePanel />
 
@@ -218,25 +177,6 @@ export function ProfileDetailsPage({ data, profileId, onBack }: Props) {
         </div>
       </div>
 
-      {dialog === 'edit' && (
-        <Modal title={t('profiles.editTitle', { name: profile.name })} onClose={() => setDialog(null)}>
-          <ProfileForm
-            initial={profile}
-            submitLabel={t('form.saveChanges')}
-            groups={data.groups}
-            tagSuggestions={data.tags}
-            onCancel={() => setDialog(null)}
-            onSubmit={(input) =>
-              guard(async (options) => {
-                const saved = await data.updateProfile(profile.id, input, options)
-                data.notify('success', t('profiles.saved', { name: saved.name }))
-                setDialog(null)
-              })
-            }
-          />
-          {sharedDialog}
-        </Modal>
-      )}
       {dialog === 'duplicate' && (
         <DuplicateDialog
           profile={profile}
@@ -342,197 +282,52 @@ function RuntimePanel({ runtime }: { runtime: RuntimeInfo | null }) {
   )
 }
 
-/** Time zone, language, window, zoom, User-Agent and permissions for one profile. */
-function BrowserSettingsPanel({
-  profile,
-  runtime,
-  detectedTz,
-  running,
-  onSave
-}: {
-  profile: Profile
-  runtime: RuntimeInfo | null
-  detectedTz: string | null
-  running: boolean
-  onSave: (browser: Partial<BrowserConfig>) => Promise<void>
-}) {
+/** The profile's main settings at a glance, each with a shortcut into the editor. */
+function ConfigCard({ profile, onEdit }: { profile: Profile; onEdit: (tab: EditorTab) => void }) {
   const { t } = useI18n()
-  const [draft, setDraft] = useState<BrowserConfig>(profile.browser)
-  const [language, setLanguage] = useState(profile.browser.language ?? '')
-  const [tzInput, setTzInput] = useState(profile.browser.timezoneManual ?? '')
-  const [busy, setBusy] = useState(false)
-  const [error, setError] = useState<string | null>(null)
-  const zones = useMemo(() => supportedTimeZones(), [])
-  const set = <K extends keyof BrowserConfig>(key: K, value: BrowserConfig[K]): void => setDraft((d) => ({ ...d, [key]: value }))
-
-  const languageProblem = language.trim() && !isValidLanguageTag(language.trim()) ? t('browser.languageInvalid') : null
-  const tzProblem = draft.timezoneMode === 'manual' && !isValidTimeZone(tzInput.trim()) ? t('browser.tzInvalid') : null
-
-  const save = async (event: FormEvent): Promise<void> => {
-    event.preventDefault()
-    if (languageProblem || tzProblem) return
-    setBusy(true)
-    setError(null)
-    try {
-      await onSave({
-        ...draft,
-        language: language.trim() || null,
-        timezoneManual: draft.timezoneMode === 'manual' ? tzInput.trim() : draft.timezoneManual && isValidTimeZone(draft.timezoneManual) ? draft.timezoneManual : null
-      })
-    } catch (e) {
-      setError(errorMessage(e))
-    } finally {
-      setBusy(false)
-    }
-  }
-
-  const modeHint: Record<TimezoneMode, TKey> = { off: 'browser.tzOffHint', auto: 'browser.tzAutoHint', manual: 'browser.tzManualHint' }
-
+  const b = profile.browser
+  const o = profile.options
+  const rows: { label: string; value: string; tab: EditorTab }[] = [
+    {
+      label: t('browser.timezone'),
+      value: `${t(`browser.tz.${b.timezoneMode}` as TKey)}${b.timezoneMode === 'manual' && b.timezoneManual ? `: ${b.timezoneManual}` : ''}`,
+      tab: 'privacy'
+    },
+    { label: t('browser.language'), value: `${t(`ed.lang.${b.languageMode}` as TKey)}${b.languageMode === 'manual' && b.language ? `: ${b.language}` : ''}`, tab: 'browser' },
+    { label: t('ed.geo.title'), value: t(`ed.geo.${b.geolocationMode}` as TKey), tab: 'privacy' },
+    { label: t('browser.ua'), value: t(`ed.ua.${b.userAgent}` as TKey), tab: 'browser' },
+    { label: t('browser.webrtc'), value: t(`webrtc.${b.webrtcPolicy}` as TKey), tab: 'privacy' },
+    { label: t('ed.adv.startup'), value: t(`ed.startup.${o.startupMode}` as TKey), tab: 'advanced' },
+    { label: t('ed.sum.window'), value: `${b.windowWidth} × ${b.windowHeight} · ${b.zoomPercent}%`, tab: 'browser' }
+  ]
   return (
-    <form className="panel form" onSubmit={(e) => void save(e)} noValidate data-testid="browser-settings">
-      <h2>{t('details.browser')}</h2>
-      {running && <p className="small muted">{t('browser.appliesOpen')}</p>}
-
-      <fieldset className="choice-list">
-        <legend>{t('browser.timezone')}</legend>
-        <div className="segmented wide" role="radiogroup" aria-label={t('browser.timezone')}>
-          {(['off', 'auto', 'manual'] as TimezoneMode[]).map((mode) => (
-            <button key={mode} type="button" role="radio" aria-checked={draft.timezoneMode === mode} aria-pressed={draft.timezoneMode === mode} onClick={() => set('timezoneMode', mode)}>
-              {t(`browser.tz.${mode}` as TKey)}
-            </button>
-          ))}
-        </div>
-        <p className="small muted">{t(modeHint[draft.timezoneMode])}</p>
-        {draft.timezoneMode === 'auto' && (
-          <p className="small">
-            {detectedTz ? t('browser.tzDetected', { tz: detectedTz }) : t('browser.tzNotDetected')}
-          </p>
-        )}
-        {draft.timezoneMode === 'manual' && (
-          <label className="field">
-            <span>{t('browser.tzPick')}</span>
-            <input list="pob-timezones" value={tzInput} onChange={(e) => setTzInput(e.target.value)} placeholder="Asia/Dhaka" />
-            <datalist id="pob-timezones">
-              {zones.map((z) => (
-                <option key={z} value={z} />
-              ))}
-            </datalist>
-            {tzProblem && <small className="warn">{tzProblem}</small>}
-          </label>
-        )}
-        <p className="small muted">{t('browser.tzNote')}</p>
-      </fieldset>
-
-      <label className="field">
-        <span>{t('browser.language')}</span>
-        <input list="pob-languages" value={language} onChange={(e) => setLanguage(e.target.value)} placeholder={t('browser.languageDefault')} maxLength={35} />
-        <datalist id="pob-languages">
-          {COMMON_LANGUAGES.map((l) => (
-            <option key={l} value={l} />
-          ))}
-        </datalist>
-        <small className="muted">{languageProblem ?? t('browser.languageHint')}</small>
-      </label>
-
-      <div className="field-row">
-        <label className="field">
-          <span>{t('browser.width')}</span>
-          <input
-            type="number"
-            min={BROWSER_LIMITS.windowMinWidth}
-            max={BROWSER_LIMITS.windowMaxWidth}
-            value={draft.windowWidth}
-            onChange={(e) => set('windowWidth', Number(e.target.value))}
-          />
-        </label>
-        <label className="field">
-          <span>{t('browser.height')}</span>
-          <input
-            type="number"
-            min={BROWSER_LIMITS.windowMinHeight}
-            max={BROWSER_LIMITS.windowMaxHeight}
-            value={draft.windowHeight}
-            onChange={(e) => set('windowHeight', Number(e.target.value))}
-          />
-        </label>
-        <label className="field">
-          <span>{t('browser.zoom')}</span>
-          <select value={draft.zoomPercent} onChange={(e) => set('zoomPercent', Number(e.target.value))}>
-            {[...new Set([...ZOOM_STEPS, draft.zoomPercent])].sort((a, b) => a - b).map((z) => (
-              <option key={z} value={z}>
-                {z}%
-              </option>
-            ))}
-          </select>
-        </label>
-      </div>
-
-      <fieldset className="choice-list">
-        <legend>{t('browser.ua')}</legend>
-        <label className={`choice ${draft.userAgent === 'default' ? 'chosen' : ''}`}>
-          <input type="radio" name="ua" checked={draft.userAgent === 'default'} onChange={() => set('userAgent', 'default')} />
-          <span>
-            <strong>{t('browser.uaDefault')}</strong>
-            <small className="mono break">{runtime?.defaultUserAgent ?? ''}</small>
-          </span>
-        </label>
-        <label className={`choice ${draft.userAgent === 'chrome' ? 'chosen' : ''}`}>
-          <input type="radio" name="ua" checked={draft.userAgent === 'chrome'} onChange={() => set('userAgent', 'chrome')} />
-          <span>
-            <strong>{t('browser.uaChrome')}</strong>
-            <small className="mono break">{runtime?.chromeUserAgent ?? ''}</small>
-          </span>
-        </label>
-        <p className="small muted">{t('browser.uaNote')}</p>
-      </fieldset>
-
-      <fieldset className="choice-list" data-testid="webrtc-setting">
-        <legend>{t('browser.webrtc')}</legend>
-        {WEBRTC_POLICIES.map((policy) => (
-          <label key={policy} className={`choice ${draft.webrtcPolicy === policy ? 'chosen' : ''}`}>
-            <input type="radio" name="webrtc" checked={draft.webrtcPolicy === policy} onChange={() => set('webrtcPolicy', policy)} />
-            <span>
-              <strong>{t(`webrtc.${policy}` as TKey)}</strong>
-              <small>{t(`webrtc.${policy}.hint` as TKey)}</small>
-            </span>
-          </label>
-        ))}
-        <p className="small muted">{t('browser.webrtcNote')}</p>
-      </fieldset>
-
-      <fieldset className="choice-list">
-        <legend>{t('browser.permissions')}</legend>
-        {CONFIGURABLE_PERMISSIONS.map((perm) => (
-          <label key={perm} className="toggle">
-            <input
-              type="checkbox"
-              checked={draft.permissions[perm] === 'allow'}
-              onChange={(e) => set('permissions', { ...draft.permissions, [perm]: e.target.checked ? 'allow' : 'block' })}
-            />
-            <span>{t(PERMISSION_LABEL[perm])}</span>
-          </label>
-        ))}
-        <p className="small muted">{t('browser.permissionsNote')}</p>
-      </fieldset>
-
-      {error && <div className="alert error">{error}</div>}
-      <div className="form-actions">
-        <button
-          type="button"
-          className="button"
-          disabled={busy}
-          onClick={() => {
-            setDraft(profile.browser)
-            setLanguage(profile.browser.language ?? '')
-            setTzInput(profile.browser.timezoneManual ?? '')
-          }}
-        >
-          {t('browser.reset')}
-        </button>
-        <button type="submit" className="button primary" disabled={busy || Boolean(languageProblem) || Boolean(tzProblem)}>
-          {busy ? t('common.saving') : t('browser.save')}
+    <div className="panel" data-testid="config-card">
+      <div className="panel-head">
+        <h2>{t('details.browser')}</h2>
+        <button type="button" className="button small primary" onClick={() => onEdit('general')}>
+          <Icon name="edit" size={16} /> {t('ed.openEditor')}
         </button>
       </div>
-    </form>
+      <dl className="kv">
+        {rows.map((r) => (
+          <Fragment key={r.label}>
+            <dt>{r.label}</dt>
+            <dd>
+              <button type="button" className="link-button" onClick={() => onEdit(r.tab)}>
+                {r.value}
+              </button>
+            </dd>
+          </Fragment>
+        ))}
+      </dl>
+      <div className="button-row">
+        <button type="button" className="button small" onClick={() => onEdit('diagnostics')}>
+          {t('diag.run')}
+        </button>
+        <button type="button" className="button small" onClick={() => onEdit('extensions')}>
+          {t('ed.tab.extensions')}
+        </button>
+      </div>
+    </div>
   )
 }

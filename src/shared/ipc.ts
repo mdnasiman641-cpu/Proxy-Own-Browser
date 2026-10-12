@@ -37,7 +37,14 @@ import type {
   RestoreOutcome,
   RestoreRequest,
   RuntimeInfo,
-  SaveProfileOptions
+  SaveProfileOptions,
+  ClearDataKind,
+  ClearDataResult,
+  CookieSummary,
+  LaunchReport,
+  ProfileEffectiveConfig,
+  ProfileExtension,
+  ProfileStorageInfo
 } from './types'
 import type { ProfileDiagnostics } from './diagnostics'
 
@@ -100,7 +107,19 @@ export const DashboardChannels = {
   pendingJobs: 'jobs:pending',
   cancelJob: 'jobs:cancel',
   startupNotes: 'jobs:startup-notes',
-  restartApp: 'app:restart'
+  restartApp: 'app:restart',
+  effectiveConfig: 'profiles:effective-config',
+  launchReport: 'profiles:launch-report',
+  reopenProfile: 'profiles:reopen',
+  exportProfileConfig: 'profiles:export-config',
+  chooseDownloadFolder: 'profiles:choose-download-folder',
+  listExtensions: 'extensions:list',
+  addExtension: 'extensions:add',
+  setExtensionEnabled: 'extensions:set-enabled',
+  removeExtension: 'extensions:remove',
+  storageInfo: 'data:storage-info',
+  listCookies: 'data:cookies',
+  clearProfileData: 'data:clear'
 } as const
 
 /** Invoke channels callable from a profile window toolbar. */
@@ -126,7 +145,8 @@ export const Events = {
   profileStatusesChanged: 'event:profile-statuses-changed',
   catalogChanged: 'event:catalog-changed',
   networkStatusChanged: 'event:network-status-changed',
-  backupProgress: 'event:backup-progress'
+  backupProgress: 'event:backup-progress',
+  launchReportChanged: 'event:launch-report-changed'
 } as const
 
 export interface BackupProgress {
@@ -190,8 +210,12 @@ export interface DashboardApi {
     proxy: { host: string; port: number; username?: string | null }
   ): Promise<IpcResult<ProxyConflict[]>>
   duplicateProfile(id: string, request: DuplicateRequest, options?: SaveProfileOptions): Promise<IpcResult<DuplicateResult>>
-  /** Proxy check + public IP + IP location through the profile's saved proxy (stored). */
-  checkNetwork(id: string): Promise<IpcResult<ProfileNetworkStatus>>
+  /**
+   * Proxy check + public IP + IP location through the profile's saved proxy (stored). Without
+   * `force` the location is reused when the exit IP is unchanged ("Refresh IP"); with it the
+   * location is always looked up again ("Refresh location").
+   */
+  checkNetwork(id: string, options?: { force?: boolean }): Promise<IpcResult<ProfileNetworkStatus>>
   networkStatuses(): Promise<IpcResult<Record<string, ProfileNetworkStatus>>>
   /**
    * Proxy, DNS, page-reported values and WebRTC tests for one profile. The STUN test contacts a
@@ -218,6 +242,26 @@ export interface DashboardApi {
   /** Results of tasks that ran when the app started (scheduled backups/restores). */
   startupNotes(): Promise<IpcResult<string[]>>
   restartApp(): Promise<IpcResult<void>>
+
+  /** Saved, stored and (when open) applied configuration of a profile. */
+  effectiveConfig(id: string): Promise<IpcResult<ProfileEffectiveConfig>>
+  launchReport(id: string): Promise<IpcResult<LaunchReport | null>>
+  /** Closes and reopens an open profile so start-only settings apply. */
+  reopenProfile(id: string): Promise<IpcResult<void>>
+  /** Saves this profile's configuration (no password, no browser data) to a JSON file. */
+  exportProfileConfig(id: string): Promise<IpcResult<{ saved: boolean; filePath?: string }>>
+  /** Folder picker for the profile's download folder; returns the chosen path or null. */
+  chooseDownloadFolder(): Promise<IpcResult<string | null>>
+  listExtensions(id: string): Promise<IpcResult<ProfileExtension[]>>
+  /** Opens a folder picker and installs the chosen unpacked extension into this profile. */
+  addExtension(id: string): Promise<IpcResult<{ extension: ProfileExtension; warnings: string[]; loadError: string | null } | null>>
+  setExtensionEnabled(id: string, extensionId: string, enabled: boolean): Promise<IpcResult<ProfileExtension>>
+  removeExtension(id: string, extensionId: string): Promise<IpcResult<void>>
+  storageInfo(id: string): Promise<IpcResult<ProfileStorageInfo>>
+  /** Cookies of this profile only (names and domains; values are never sent). */
+  listCookies(id: string): Promise<IpcResult<CookieSummary[]>>
+  clearProfileData(id: string, kind: ClearDataKind, origin?: string | null): Promise<IpcResult<ClearDataResult>>
+  onLaunchReportChanged(listener: (profileId: string) => void): () => void
 
   onNetworkStatusChanged(listener: (profileId: string) => void): () => void
   onBackupProgress(listener: (progress: BackupProgress) => void): () => void

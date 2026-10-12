@@ -190,6 +190,38 @@ export const MIGRATIONS: readonly Migration[] = [
         WHERE proxy_status = 'success';
       ALTER TABLE backup_history ADD COLUMN profile_ids TEXT;
     `
+  },
+  {
+    // Advanced profile settings: per-profile options (startup, window, downloads, labels…),
+    // unpacked extensions installed into a profile, and the tabs saved when a window closed
+    // (for "restore previous tabs"). Existing profiles get the defaults ('{}').
+    version: 6,
+    sql: `
+      ALTER TABLE profiles ADD COLUMN profile_options TEXT NOT NULL DEFAULT '{}';
+      CREATE TABLE profile_extensions (
+        id            TEXT PRIMARY KEY,
+        profile_id    TEXT NOT NULL,
+        name          TEXT NOT NULL,
+        version       TEXT NOT NULL DEFAULT '',
+        manifest_version INTEGER NOT NULL,
+        folder        TEXT NOT NULL,
+        chrome_id     TEXT,
+        enabled       INTEGER NOT NULL DEFAULT 1,
+        last_error    TEXT,
+        added_at      TEXT NOT NULL
+      );
+      CREATE INDEX idx_profile_extensions_profile ON profile_extensions (profile_id);
+      ALTER TABLE profile_network_status ADD COLUMN last_valid_geo_json TEXT;
+      ALTER TABLE profile_network_status ADD COLUMN last_valid_geo_at TEXT;
+      ALTER TABLE profile_network_status ADD COLUMN last_valid_geo_route TEXT;
+      UPDATE profile_network_status SET last_valid_geo_json = geo_json, last_valid_geo_at = geo_checked_at,
+        last_valid_geo_route = route_key WHERE geo_status = 'success' AND geo_json IS NOT NULL;
+      CREATE TABLE profile_last_tabs (
+        profile_id    TEXT PRIMARY KEY,
+        urls          TEXT NOT NULL,
+        saved_at      TEXT NOT NULL
+      );
+    `
   }
 ]
 

@@ -1,6 +1,8 @@
 import { useCallback, useState } from 'react'
 import { Icon, type IconName } from '../common/Icon'
 import { I18nProvider, useI18n } from './i18n'
+import { ProfileEditorHost } from './components/editor/ProfileEditor'
+import { ConfirmDialog } from './components/Modal'
 import { BackupPage } from './pages/BackupPage'
 import { DashboardPage } from './pages/DashboardPage'
 import { GroupsTagsPage } from './pages/GroupsTagsPage'
@@ -28,7 +30,9 @@ export function App() {
   const data = useAppData()
   return (
     <I18nProvider language={data.settings?.language ?? 'en'}>
-      <Shell data={data} />
+      <ProfileEditorHost data={data}>
+        <Shell data={data} />
+      </ProfileEditorHost>
     </I18nProvider>
   )
 }
@@ -123,6 +127,16 @@ function Shell({ data }: { data: AppData }) {
           </>
         )}
       </main>
+
+      {data.pendingOpen && (
+        <ConfirmDialog
+          title={t('open.confirmTitle', { count: data.pendingOpen.profiles.length })}
+          message={<p>{t('open.confirmBody', { names: data.pendingOpen.profiles.map((p) => p.name).join(', ') })}</p>}
+          confirmLabel={t('common.open')}
+          onCancel={() => data.resolvePendingOpen(false)}
+          onConfirm={() => data.resolvePendingOpen(true)}
+        />
+      )}
 
       <div className="toasts" aria-live="polite">
         {data.toasts.map((toast) => (

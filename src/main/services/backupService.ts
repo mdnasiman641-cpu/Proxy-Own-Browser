@@ -1,6 +1,7 @@
 import { createHash } from 'node:crypto'
 import { z } from 'zod'
 import { parseStoredBrowserConfig } from '@shared/browserConfig'
+import { parseStoredProfileOptions } from '@shared/profileOptions'
 import { PROXY_PROTOCOLS, type AppSettings, type ProfileTemplate } from '@shared/types'
 import {
   LIMITS,
@@ -104,6 +105,8 @@ const v2TemplateSchema = z.object({
 
 const v3ProfileSchema = v2ProfileSchema.extend({
   browser: z.unknown().optional(),
+  /** Added in app 0.7.0; older apps ignore it. */
+  options: z.unknown().optional(),
   createdAt: z.string().max(40).optional()
 })
 
@@ -116,8 +119,12 @@ export function parsePortableProfile(value: unknown): PortableProfile & { groupN
     .extend({ groupName: z.string().min(1).max(LIMITS.groupNameMax).nullable().optional() })
     .safeParse(value)
   if (!parsed.success) throw new ValidationError(DAMAGED)
-  const { browser, ...rest } = parsed.data
-  return browser === undefined ? rest : { ...rest, browser: parseStoredBrowserConfig(browser) }
+  const { browser, options, ...rest } = parsed.data
+  return {
+    ...rest,
+    ...(browser === undefined ? {} : { browser: parseStoredBrowserConfig(browser) }),
+    ...(options === undefined ? {} : { options: parseStoredProfileOptions(options) })
+  }
 }
 
 const v2Schema = z.object({
@@ -230,9 +237,11 @@ export function parseBackup(text: string): ParsedBackup {
     exportedAt: v2.data.exportedAt,
     appVersion: v2.data.appVersion,
     // Browser settings are validated field by field; unknown or invalid values fall back to defaults.
-    profiles: v2.data.profiles.map(({ browser, ...p }) =>
-      browser === undefined ? p : { ...p, browser: parseStoredBrowserConfig(browser) }
-    ),
+    profiles: v2.data.profiles.map(({ browser, options, ...p }) => ({
+      ...p,
+      ...(browser === undefined ? {} : { browser: parseStoredBrowserConfig(browser) }),
+      ...(options === undefined ? {} : { options: parseStoredProfileOptions(options) })
+    })),
     groups: v2.data.groups,
     tags: v2.data.tags,
     templates: v2.data.templates,

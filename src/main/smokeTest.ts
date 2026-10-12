@@ -17,6 +17,7 @@ import {
   type Fixtures,
   type SmokeContext
 } from './smokeHelpers'
+import { editorSetupChecks, editorVerifyChecks } from './smokeEditor'
 import { phase4SetupChecks, phase4VerifyChecks } from './smokePhase4'
 
 /**
@@ -55,10 +56,11 @@ export async function runSmokeTest(ctx: SmokeContext): Promise<void> {
       await setupStage(ctx, check, fixtures)
     } else if (ctx.stage === 'verify') {
       const names = ctx.profiles.list().map((p) => p.name).sort()
-      const expected = ['Smoke A', 'Smoke A copy', 'Smoke B', 'Smoke Proxy']
+      const expected = ['Smoke A', 'Smoke A copy', 'Smoke B', 'Smoke Editor', 'Smoke Proxy']
       check('profiles restored from SQLite', JSON.stringify(names) === JSON.stringify(expected), names.join(', '))
       // Phase 4 first: it backs up profile A before anything in this run opens A's session.
       await phase4VerifyChecks(ctx, check, fixtures)
+      await editorVerifyChecks(ctx, check)
       const all = ctx.profiles.list()
       const a = all.find((p) => p.name === 'Smoke A')
       const b = all.find((p) => p.name === 'Smoke B')
@@ -173,6 +175,7 @@ async function setupStage(ctx: SmokeContext, check: Check, fixtures: Fixtures | 
     await proxyChecks(ctx, check, fixtures)
     await managerChecks(ctx, check, a.id, b.id)
     await phase4SetupChecks(ctx, check, fixtures, a.id, b.id)
+    await editorSetupChecks(ctx, check, fixtures, a.id)
   } else {
     check('fixtures available', false, 'POB_SMOKE_FIXTURES not set')
   }

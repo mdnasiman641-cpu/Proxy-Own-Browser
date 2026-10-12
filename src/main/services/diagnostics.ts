@@ -20,7 +20,12 @@ export interface DiagnosticsInput {
   /** Partition of the session the tested page actually runs in; null when not tested. */
   pagePartition: string | null
   /** Values the open window applies; null when the profile is not open. */
-  expected: { timezone: string | null; locale: string | null; userAgent: string } | null
+  expected: {
+    timezone: string | null
+    locale: string | null
+    userAgent: string
+    geolocation?: { latitude: number; longitude: number } | null
+  } | null
   /** This PC's time zone (what pages show when no override is applied). */
   systemTimezone: string
   stunServer: string | null
@@ -94,25 +99,30 @@ export function buildDiagnostics(input: DiagnosticsInput): ProfileDiagnostics {
   const tzExpected = expected ? (expected.timezone ?? input.systemTimezone) : null
   const timezone = page
     ? compareValue(page.timezone, tzExpected, (a, b) => canonicalZone(a) === canonicalZone(b))
-    : { verdict: 'unknown' as const, observed: null, expected: tzExpected, detail: 'Open the profile to test what its pages report.' }
+    : notTested(tzExpected)
   if (page && expected && !expected.timezone && timezone.verdict === 'pass') {
     timezone.detail = 'No time zone override: pages show this PC’s time zone.'
   }
 
   const language = page
     ? compareValue(page.language, expected?.locale ?? null, sameLanguage, 'No language set for this profile; pages use the app default.')
-    : { verdict: 'unknown' as const, observed: null, expected: expected?.locale ?? profile.browser.language, detail: 'Open the profile to test what its pages report.' }
+    : notTested(expected?.locale ?? profile.browser.language)
   if (page && page.languages.length > 0) language.detail += ` navigator.languages: ${page.languages.join(', ')}.`
 
   const userAgent = page
     ? compareValue(page.userAgent, expected?.userAgent ?? null)
-    : { verdict: 'unknown' as const, observed: null, expected: expected?.userAgent ?? null, detail: 'Open the profile to test what its pages report.' }
+    : notTested(expected?.userAgent ?? null)
 
   const webrtcLocal = page
     ? assessLocalWebRtc(page.webrtc, proxyIp, hasProxy)
-    : { verdict: 'unknown' as const, observed: null, expected: null, detail: 'Open the profile to test WebRTC in its pages.', candidates: [] }
+    : { ...notTested(null), candidates: [] }
 
   const webrtcStun = input.stunServer ? assessStun(page ? page.stun : null, proxyIp, hasProxy, input.stunServer) : null
+
+  const secureConnection = assessSecureConnection(page)
+  const permission = profile.browser.permissions.geolocation
+  const geolocationPermission = assessGeolocationPermission(page, permission)
+  const geolocationPosition = assessGeolocationPosition(page, expected?.geolocation ?? null)
 
   return {
     profileId: profile.id,
@@ -130,8 +140,90 @@ export function buildDiagnostics(input: DiagnosticsInput): ProfileDiagnostics {
     userAgent,
     webrtcPolicy: profile.browser.webrtcPolicy,
     webrtcLocal,
-    webrtcStun
+    webrtcStun,
+    secureConnection,
+    geolocationPermission,
+    geolocationPosition,
+    reportedHardware: page?.hardware ?? null
   }
+}
+
+function notTested(expected: string | null): DiagnosticCheck {
+  return { verdict: 'not-tested', observed: null, expected, detail: 'Open the profile to test what its pages report.' }
+}
+
+/** HTTPS pages only load with a certificate Chromium accepted; plain HTTP is not encrypted. */
+export function assessSecureConnection(page: PageProbeResult | null): DiagnosticCheck {
+  if (!page) return notTested('https')
+  let protocol = ''
+  try {
+    protocol = new URL(page.url).protocol
+  } catch {
+    // not a URL
+  }
+  if (protocol === 'https:') {
+    return {
+      verdict: 'pass',
+      observed: page.secureContext === false ? 'https (not a secure context)' : 'https',
+      expected: 'https',
+      detail: 'The page was loaded over HTTPS with a certificate Chromium accepted (invalid certificates are refused).'
+    }
+  }
+  if (protocol === 'http:') {
+    return { verdict: 'warning', observed: 'http', expected: 'https', detail: 'This page is not encrypted; the proxy and the network can read it.' }
+  }
+  return { verdict: 'not-tested', observed: protocol || null, expected: 'https', detail: 'Open a website in the active tab to test its connection.' }
+}
+
+const PERMISSION_STATE: Record<string, string> = { allow: 'granted', block: 'denied', ask: 'prompt' }
+
+export function assessGeolocationPermission(page: PageProbeResult | null, setting: string): DiagnosticCheck {
+  const expected = PERMISSION_STATE[setting] ?? null
+  if (!page) return notTested(expected)
+  const observed = page.geolocationPermission
+  if (!observed) return { verdict: 'unknown', observed: null, expected, detail: 'The page could not query the permission.' }
+  if (setting === 'ask') {
+    return { verdict: 'info', observed, expected: 'asked per site', detail: 'The site is asked once per window; the state depends on your answer.' }
+  }
+  return observed === expected
+    ? { verdict: 'pass', observed, expected, detail: 'Matches the profile’s permission setting.' }
+    : { verdict: 'warning', observed, expected, detail: 'The page reports a different permission state than the profile setting.' }
+}
+
+/** Distance between two coordinates in kilometres (haversine). */
+export function distanceKm(a: { latitude: number; longitude: number }, b: { latitude: number; longitude: number }): number {
+  const rad = (d: number): number => (d * Math.PI) / 180
+  const dLat = rad(b.latitude - a.latitude)
+  const dLon = rad(b.longitude - a.longitude)
+  const h = Math.sin(dLat / 2) ** 2 + Math.cos(rad(a.latitude)) * Math.cos(rad(b.latitude)) * Math.sin(dLon / 2) ** 2
+  return 6371 * 2 * Math.asin(Math.min(1, Math.sqrt(h)))
+}
+
+export function assessGeolocationPosition(
+  page: PageProbeResult | null,
+  expected: { latitude: number; longitude: number } | null
+): DiagnosticCheck {
+  const expectedText = expected ? `${expected.latitude.toFixed(4)}, ${expected.longitude.toFixed(4)}` : 'no location'
+  if (!page) return notTested(expectedText)
+  const position = page.geolocationPosition
+  if (position === null) {
+    return {
+      verdict: 'not-tested',
+      observed: null,
+      expected: expectedText,
+      detail: 'Not read: the site does not have the location permission (reading it would ask or be refused).'
+    }
+  }
+  if ('error' in position) {
+    return expected
+      ? { verdict: 'fail', observed: position.error, expected: expectedText, detail: 'The page did not receive the configured location.' }
+      : { verdict: 'pass', observed: position.error, expected: expectedText, detail: 'No location is provided to pages, as configured.' }
+  }
+  const observed = `${position.latitude.toFixed(4)}, ${position.longitude.toFixed(4)} (±${Math.round(position.accuracy)} m)`
+  if (!expected) return { verdict: 'info', observed, expected: expectedText, detail: 'The page received a location although none is configured.' }
+  return distanceKm(position, expected) < 1
+    ? { verdict: 'pass', observed, expected: expectedText, detail: 'The page receives the profile’s configured location.' }
+    : { verdict: 'fail', observed, expected: expectedText, detail: 'The page receives a different location than configured.' }
 }
 
 /** Gathering time per WebRTC test inside the page. */
@@ -172,8 +264,36 @@ export function probeScript(stunServer: string | null, gatherMs = WEBRTC_GATHER_
     languages: Array.from(navigator.languages || []),
     userAgent: navigator.userAgent || null,
     webrtc: null,
-    stun: null
+    stun: null,
+    secureContext: null,
+    hardware: null,
+    geolocationPermission: null,
+    geolocationPosition: null
   }
+  try {
+    const nav = navigator
+    result.secureContext = typeof isSecureContext === 'boolean' ? isSecureContext : null
+    result.hardware = {
+      hardwareConcurrency: typeof nav.hardwareConcurrency === 'number' ? nav.hardwareConcurrency : null,
+      deviceMemory: typeof nav.deviceMemory === 'number' ? nav.deviceMemory : null,
+      screenWidth: screen.width, screenHeight: screen.height,
+      devicePixelRatio: window.devicePixelRatio, platform: nav.platform || null
+    }
+  } catch (e) {}
+  try {
+    const state = (await navigator.permissions.query({ name: 'geolocation' })).state
+    result.geolocationPermission = state
+    // Only read the position when the site already may: reading it otherwise would ask the user.
+    if (state === 'granted') {
+      result.geolocationPosition = await new Promise((resolve) => {
+        navigator.geolocation.getCurrentPosition(
+          (p) => resolve({ latitude: p.coords.latitude, longitude: p.coords.longitude, accuracy: p.coords.accuracy }),
+          (e) => resolve({ error: e && e.message ? e.message : 'unavailable' }),
+          { timeout: 3000, maximumAge: 0 }
+        )
+      })
+    }
+  } catch (e) {}
   result.webrtc = await gather([])
   ${stunServer ? `result.stun = await gather([{ urls: ${JSON.stringify(stunServer)} }])` : ''}
   return result
@@ -198,6 +318,36 @@ export function parseProbeResult(value: unknown): PageProbeResult | null {
     languages: Array.isArray(v.languages) ? v.languages.filter((l): l is string => typeof l === 'string').slice(0, 20).map((l) => l.slice(0, 64)) : [],
     userAgent: str(v.userAgent, 500),
     webrtc: gathered(v.webrtc),
-    stun: gathered(v.stun)
+    stun: gathered(v.stun),
+    secureContext: typeof v.secureContext === 'boolean' ? v.secureContext : null,
+    hardware: parseHardware(v.hardware),
+    geolocationPermission: typeof v.geolocationPermission === 'string' ? v.geolocationPermission.slice(0, 20) : null,
+    geolocationPosition: parsePosition(v.geolocationPosition)
   }
+}
+
+const finiteOrNull = (x: unknown, min: number, max: number): number | null =>
+  typeof x === 'number' && Number.isFinite(x) && x >= min && x <= max ? x : null
+
+function parseHardware(value: unknown): PageProbeResult['hardware'] {
+  if (!value || typeof value !== 'object') return null
+  const h = value as Record<string, unknown>
+  return {
+    hardwareConcurrency: finiteOrNull(h.hardwareConcurrency, 0, 4096),
+    deviceMemory: finiteOrNull(h.deviceMemory, 0, 4096),
+    screenWidth: finiteOrNull(h.screenWidth, 0, 100_000),
+    screenHeight: finiteOrNull(h.screenHeight, 0, 100_000),
+    devicePixelRatio: finiteOrNull(h.devicePixelRatio, 0, 100),
+    platform: typeof h.platform === 'string' ? h.platform.slice(0, 64) : null
+  }
+}
+
+function parsePosition(value: unknown): PageProbeResult['geolocationPosition'] {
+  if (!value || typeof value !== 'object') return null
+  const p = value as Record<string, unknown>
+  if (typeof p.error === 'string') return { error: p.error.slice(0, 200) }
+  const latitude = finiteOrNull(p.latitude, -90, 90)
+  const longitude = finiteOrNull(p.longitude, -180, 180)
+  const accuracy = finiteOrNull(p.accuracy, 0, 10_000_000)
+  return latitude === null || longitude === null || accuracy === null ? null : { latitude, longitude, accuracy }
 }

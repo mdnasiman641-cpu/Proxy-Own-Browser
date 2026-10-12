@@ -86,7 +86,7 @@ function createEcho() {
     }
     if (url.pathname === '/headers') {
       res.writeHead(200, { 'content-type': 'application/json', 'cache-control': 'no-store' })
-      res.end(JSON.stringify({ acceptLanguage: req.headers['accept-language'] ?? null, userAgent: req.headers['user-agent'] ?? null }))
+      res.end(JSON.stringify({ acceptLanguage: req.headers['accept-language'] ?? null, userAgent: req.headers['user-agent'] ?? null, dnt: req.headers.dnt ?? null }))
       return
     }
     if (url.pathname === '/page') {

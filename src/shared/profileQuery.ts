@@ -57,6 +57,8 @@ export function filterAndSortProfiles(
         p.name,
         p.notes,
         p.proxy?.host ?? '',
+        p.options?.purpose ?? '',
+        p.options?.proxyLabel ?? '',
         p.groupId ? (groupName.get(p.groupId) ?? '') : '',
         ...p.tags
       ]

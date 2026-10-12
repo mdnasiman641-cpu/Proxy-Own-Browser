@@ -21,6 +21,10 @@ import { registerIpcHandlers } from './electron/ipcHandlers'
 import { ProfileWindowManager } from './electron/profileWindows'
 import { ProxyTester } from './electron/proxyTester'
 import { SessionManager } from './electron/sessionManager'
+import { ExtensionLoader } from './electron/extensionLoader'
+import { ProfileDataService } from './electron/profileData'
+import { ExtensionStore } from './services/extensionStore'
+import { LastTabsStore } from './services/lastTabs'
 import { runSmokeTest } from './smokeTest'
 
 // Optional data-folder override (used by the automated smoke test and for portable setups).
@@ -120,6 +124,9 @@ async function start(): Promise<void> {
   const broadcast = (channel: string, payload?: unknown): void => {
     if (dashboard && !dashboard.isDestroyed()) dashboard.webContents.send(channel, payload)
   }
+  const extensions = new ExtensionStore({ db, userDataPath: userData })
+  const extensionLoader = new ExtensionLoader(extensions, logger)
+  const lastTabs = new LastTabsStore(db)
   const windows: ProfileWindowManager = new ProfileWindowManager({
     profiles,
     settings,
@@ -133,6 +140,9 @@ async function start(): Promise<void> {
       return plan
     },
     onTimezoneReport: (profileId) => broadcast(Events.networkStatusChanged, profileId),
+    extensions: extensionLoader,
+    lastTabs,
+    onLaunchReport: (profileId) => broadcast(Events.launchReportChanged, profileId),
     pressure: (appMemoryMb) =>
       assessPressure({
         totalMemoryMb: totalmem() / 1048576,
@@ -143,6 +153,13 @@ async function start(): Promise<void> {
       })
   })
   windowsRef = windows
+  const profileData = new ProfileDataService({
+    profiles,
+    sessions,
+    userDataPath: userData,
+    isOpen: (id) => windows.isOpen(id),
+    logger
+  })
 
   registerIpcHandlers({
     profiles,
@@ -163,7 +180,10 @@ async function start(): Promise<void> {
     backupCenter,
     startupNotes,
     notifyNetworkStatus: (profileId) => broadcast(Events.networkStatusChanged, profileId),
-    sendBackupProgress: (progress) => broadcast(Events.backupProgress, progress)
+    sendBackupProgress: (progress) => broadcast(Events.backupProgress, progress),
+    extensions,
+    extensionLoader,
+    profileData
   })
 
   // Diagnostics for background process failures (type, reason and exit code only).
@@ -238,7 +258,12 @@ async function start(): Promise<void> {
       startupNotes,
       settings,
       getDashboard: () => dashboard,
-      logger
+      logger,
+      extensions,
+      extensionLoader,
+      profileData,
+      lastTabs,
+      userDataPath: userData
     })
   }
 }

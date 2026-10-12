@@ -9,6 +9,7 @@ import { BulkCreateWizard } from '../components/BulkCreateWizard'
 import { DuplicateDialog } from '../components/DuplicateDialog'
 import { BackupStatusLine } from '../components/BackupStatusLine'
 import { NetworkBadge } from '../components/NetworkStatusView'
+import { useProfileEditor } from '../components/editor/ProfileEditor'
 import { useSharedProxyGuard } from '../components/SharedProxyGuard'
 import { BulkResultDialog, GroupChip, GroupSelect, StatusBadge, TagInput, TagList } from '../components/Bits'
 import { ConfirmDialog, Modal } from '../components/Modal'
@@ -32,7 +33,6 @@ interface Props {
 type View = 'table' | 'cards'
 type Dialog =
   | { kind: 'create' }
-  | { kind: 'edit'; profile: Profile }
   | { kind: 'delete-one'; profile: Profile }
   | { kind: 'bulk-delete' }
   | { kind: 'bulk-move' }
@@ -75,6 +75,7 @@ export function ProfilesPage({ data, createRequested, onCreateHandled, wizardTem
   const searchRef = useRef<HTMLInputElement>(null)
   const { guard, dialog: sharedProxyDialog } = useSharedProxyGuard()
   const listRef = useRef<HTMLDivElement>(null)
+  const { openEditor } = useProfileEditor()
 
   const groupById = useMemo(() => new Map(data.groups.map((g) => [g.id, g])), [data.groups])
   const visible = useMemo(
@@ -148,7 +149,11 @@ export function ProfilesPage({ data, createRequested, onCreateHandled, wizardTem
     }
   }
 
-  const bulkOpen = () => void runBulkAction(() => unwrap(window.pob.bulkOpen(selection)))
+  const bulkOpen = () =>
+    void data.confirmOpening(
+      data.profiles.filter((p) => selection.includes(p.id)),
+      () => runBulkAction(() => unwrap(window.pob.bulkOpen(selection)))
+    )
   const bulkClose = () => void runBulkAction(() => unwrap(window.pob.bulkClose(selection)))
   const bulkExport = async (): Promise<void> => {
     try {
@@ -259,7 +264,8 @@ export function ProfilesPage({ data, createRequested, onCreateHandled, wizardTem
           className="icon-button"
           title={t('common.edit')}
           aria-label={t('profiles.edit', { name: p.name })}
-          onClick={() => setDialog({ kind: 'edit', profile: p })}
+          onClick={() => openEditor(p.id)}
+          data-testid="edit-button"
         >
           <Icon name="edit" />
         </button>
@@ -616,25 +622,6 @@ export function ProfilesPage({ data, createRequested, onCreateHandled, wizardTem
               guard(async (options) => {
                 const profile = await data.createProfile(input as ProfileInput, options)
                 data.notify('success', t('profiles.created', { name: profile.name }))
-                setDialog(null)
-              })
-            }
-          />
-        </Modal>
-      )}
-
-      {dialog?.kind === 'edit' && (
-        <Modal title={t('profiles.editTitle', { name: dialog.profile.name })} onClose={() => setDialog(null)}>
-          <ProfileForm
-            initial={dialog.profile}
-            submitLabel={t('form.saveChanges')}
-            groups={data.groups}
-            tagSuggestions={data.tags}
-            onCancel={() => setDialog(null)}
-            onSubmit={(input) =>
-              guard(async (options) => {
-                const profile = await data.updateProfile(dialog.profile.id, input, options)
-                data.notify('success', t('profiles.saved', { name: profile.name }))
                 setDialog(null)
               })
             }

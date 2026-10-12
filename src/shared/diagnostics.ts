@@ -9,9 +9,10 @@ import type { ProxyConfig } from './types'
  * - `warning`: observed and worth knowing, but not a mismatch.
  * - `unknown`: this test could not establish the answer.
  * - `info`: nothing is configured to compare with; the observed value is shown as is.
+ * - `not-tested`: the test needs something that is missing (e.g. an open profile window).
  * A set of passing checks is not proof of anonymity; it only covers what was tested.
  */
-export type DiagnosticVerdict = 'pass' | 'fail' | 'warning' | 'unknown' | 'info'
+export type DiagnosticVerdict = 'pass' | 'fail' | 'warning' | 'unknown' | 'info' | 'not-tested'
 
 export interface DiagnosticCheck {
   verdict: DiagnosticVerdict
@@ -40,6 +41,23 @@ export interface PageProbeResult {
   userAgent: string | null
   webrtc: { error: string | null; candidates: string[] } | null
   stun: { error: string | null; candidates: string[] } | null
+  /** window.isSecureContext of the tested page. */
+  secureContext: boolean | null
+  /** What the page reports about the device (real values; the app does not change them). */
+  hardware: ReportedHardware | null
+  /** navigator.permissions state for geolocation: granted, denied or prompt. */
+  geolocationPermission: string | null
+  /** Position the page received — only read when the permission is already granted. */
+  geolocationPosition: { latitude: number; longitude: number; accuracy: number } | { error: string } | null
+}
+
+export interface ReportedHardware {
+  hardwareConcurrency: number | null
+  deviceMemory: number | null
+  screenWidth: number | null
+  screenHeight: number | null
+  devicePixelRatio: number | null
+  platform: string | null
 }
 
 export interface ProfileDiagnostics {
@@ -62,6 +80,10 @@ export interface ProfileDiagnostics {
   webrtcLocal: DiagnosticCheck & { candidates: IceCandidateInfo[] }
   /** Only when the user asked for the STUN test. */
   webrtcStun: (DiagnosticCheck & { candidates: IceCandidateInfo[]; server: string }) | null
+  secureConnection: DiagnosticCheck
+  geolocationPermission: DiagnosticCheck
+  geolocationPosition: DiagnosticCheck
+  reportedHardware: ReportedHardware | null
 }
 
 /**

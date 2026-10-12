@@ -1,3 +1,7 @@
+import type { ExtensionStore } from './services/extensionStore'
+import type { ExtensionLoader } from './electron/extensionLoader'
+import type { ProfileDataService } from './electron/profileData'
+import type { LastTabsStore } from './services/lastTabs'
 import { get } from 'node:http'
 import type { BrowserWindow, WebContents } from 'electron'
 import type { BackupCenter } from './services/backupCenter'
@@ -32,6 +36,11 @@ export interface SmokeContext {
   startupNotes: string[]
   getDashboard: () => BrowserWindow | null
   logger: Logger
+  extensions: ExtensionStore
+  extensionLoader: ExtensionLoader
+  profileData: ProfileDataService
+  lastTabs: LastTabsStore
+  userDataPath: string
 }
 
 export interface Fixtures {

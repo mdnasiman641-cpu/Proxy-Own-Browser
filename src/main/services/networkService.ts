@@ -12,6 +12,7 @@ import type { AppDatabase } from './database'
 import type { GeoLookupResult } from './geoLookup'
 import type { Logger } from './logger'
 import type { ProfileService, ProxyTestTarget } from './profileService'
+import { resolveLanguageAndGeolocation, type LaunchPlan } from './launchPlan'
 
 /**
  * Performs one proxy check (public IP) and, optionally, the IP location lookup through it.
@@ -35,14 +36,7 @@ export const LAUNCH_RECHECK_MS = 30 * 60 * 1000
 /** @deprecated kept for older callers; see GEO_CACHE_MS. */
 export const TIMEZONE_CACHE_MS = GEO_CACHE_MS
 
-/** What a profile window applies to its pages. */
-export interface LaunchPlan {
-  timezone: string | null
-  timezoneSource: 'off' | 'manual' | 'auto'
-  locale: string | null
-  /** Shown to the user (e.g. "using the time zone detected 2 days ago"). */
-  warnings: string[]
-}
+export type { LaunchPlan } from './launchPlan'
 
 interface StatusRow {
   profile_id: string
@@ -64,6 +58,9 @@ interface StatusRow {
   ip_changed_at: string | null
   last_success_at: string | null
   last_success_ip: string | null
+  last_valid_geo_json: string | null
+  last_valid_geo_at: string | null
+  last_valid_geo_route: string | null
 }
 
 function parseGeo(json: string | null): IpGeolocation | null {
@@ -173,7 +170,9 @@ export class NetworkService {
         previousIp: row.previous_ip ?? null,
         ipChangedAt: row.ip_changed_at ?? null,
         lastSuccessAt: row.route_key === key ? (row.last_success_at ?? null) : null,
-        lastSuccessIp: row.route_key === key ? (row.last_success_ip ?? null) : null
+        lastSuccessIp: row.route_key === key ? (row.last_success_ip ?? null) : null,
+        lastValidGeo: row.last_valid_geo_route === key ? parseGeo(row.last_valid_geo_json ?? null) : null,
+        lastValidGeoAt: row.last_valid_geo_route === key ? (row.last_valid_geo_at ?? null) : null
       }
     }
     return result
@@ -275,6 +274,10 @@ export class NetworkService {
     const lastSuccess = proxy.ok
       ? { at: checkedAt, ip: proxy.ip }
       : { at: sameRoute ? (previous?.last_success_at ?? null) : null, ip: sameRoute ? (previous?.last_success_ip ?? null) : null }
+    const validGeo =
+      geoStatus === 'success' && geoData
+        ? { json: JSON.stringify(geoData), at: geoReused ? (previous?.last_valid_geo_at ?? checkedAt) : checkedAt, route: routeKey }
+        : { json: previous?.last_valid_geo_json ?? null, at: previous?.last_valid_geo_at ?? null, route: previous?.last_valid_geo_route ?? null }
     const tz = geoData?.timezone ?? null
     const lastValid = tz
       ? { tz, at: checkedAt, route: routeKey }
@@ -287,8 +290,9 @@ export class NetworkService {
     this.deps.db.run(
       `INSERT INTO profile_network_status (profile_id, route_key, checked_at, proxy_status, proxy_message,
          response_time_ms, ip, geo_status, geo_message, geo_json, last_valid_timezone, last_valid_timezone_at,
-         last_valid_timezone_route, geo_checked_at, geo_reused, previous_ip, ip_changed_at, last_success_at, last_success_ip)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+         last_valid_timezone_route, geo_checked_at, geo_reused, previous_ip, ip_changed_at, last_success_at, last_success_ip,
+         last_valid_geo_json, last_valid_geo_at, last_valid_geo_route)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
        ON CONFLICT(profile_id) DO UPDATE SET
          route_key = excluded.route_key, checked_at = excluded.checked_at, proxy_status = excluded.proxy_status,
          proxy_message = excluded.proxy_message, response_time_ms = excluded.response_time_ms, ip = excluded.ip,
@@ -296,7 +300,9 @@ export class NetworkService {
          last_valid_timezone = excluded.last_valid_timezone, last_valid_timezone_at = excluded.last_valid_timezone_at,
          last_valid_timezone_route = excluded.last_valid_timezone_route, geo_checked_at = excluded.geo_checked_at,
          geo_reused = excluded.geo_reused, previous_ip = excluded.previous_ip, ip_changed_at = excluded.ip_changed_at,
-         last_success_at = excluded.last_success_at, last_success_ip = excluded.last_success_ip`,
+         last_success_at = excluded.last_success_at, last_success_ip = excluded.last_success_ip,
+         last_valid_geo_json = excluded.last_valid_geo_json, last_valid_geo_at = excluded.last_valid_geo_at,
+         last_valid_geo_route = excluded.last_valid_geo_route`,
       [
         profileId,
         routeKey,
@@ -316,7 +322,10 @@ export class NetworkService {
         previousIp,
         ipChangedAt,
         lastSuccess.at,
-        lastSuccess.ip
+        lastSuccess.ip,
+        validGeo.json,
+        validGeo.at,
+        validGeo.route
       ]
     )
     // Status only — no IP address, location or proxy host in the log.
@@ -327,66 +336,111 @@ export class NetworkService {
   }
 
   /**
-   * Decides the time zone and locale a profile window applies. In Auto mode a missing or old
-   * time zone is detected first; if detection fails and no valid time zone exists for the
-   * current proxy, opening is refused with the reason instead of quietly using this PC's zone.
+   * Decides the time zone, language and geolocation a profile window applies. Automatic values
+   * come from the location of the proxy's exit IP: a missing or old result is checked first. If
+   * the automatic time zone cannot be determined and no valid one exists for the current proxy,
+   * opening is refused with the reason instead of quietly using this PC's zone. Automatic
+   * language and geolocation fall back to "not overridden" with a warning.
    */
   async planLaunch(profileId: string): Promise<LaunchPlan> {
     const profile = this.deps.profiles.get(profileId)
     const { browser } = profile
-    const plan: LaunchPlan = { timezone: null, timezoneSource: 'off', locale: browser.language, warnings: [] }
+    const needsLocation = browser.timezoneMode === 'auto' || browser.languageMode === 'auto' || browser.geolocationMode === 'auto'
+    let timezone: string | null = null
+    let timezoneSource: LaunchPlan['timezoneSource'] = 'off'
+    const warnings: string[] = []
+    let location: IpGeolocation | null = null
+    let locationNote: string | null = null
 
     if (browser.timezoneMode === 'manual' && browser.timezoneManual) {
-      return { ...plan, timezone: browser.timezoneManual, timezoneSource: 'manual' }
-    }
-    if (browser.timezoneMode !== 'auto') return plan
-    if (!this.deps.geoEnabled()) {
-      throw new ValidationError(
-        'Automatic time zone needs the IP location lookup, which is turned off in Application Settings. ' +
-          'Turn it on, or set this profile’s time zone manually.'
-      )
+      timezone = browser.timezoneManual
+      timezoneSource = 'manual'
     }
 
-    let status = this.status(profileId)
-    const now = this.now().getTime()
-    const fresh =
-      status?.current &&
-      status.proxy.ok &&
-      status.lastValidTimezoneCurrent &&
-      status.lastValidTimezoneAt &&
-      now - Date.parse(status.checkedAt) < LAUNCH_RECHECK_MS &&
-      now - Date.parse(status.lastValidTimezoneAt) < GEO_CACHE_MS
-    if (fresh) return { ...plan, timezone: status!.lastValidTimezone, timezoneSource: 'auto' }
+    if (needsLocation && !this.deps.geoEnabled()) {
+      if (browser.timezoneMode === 'auto') {
+        throw new ValidationError(
+          'Automatic time zone needs the IP location lookup, which is turned off in Application Settings. ' +
+            'Turn it on, or set this profile’s time zone manually.'
+        )
+      }
+      locationNote = 'IP location lookup is turned off in Application Settings'
+    } else if (needsLocation) {
+      let status = this.status(profileId)
+      const now = this.now().getTime()
+      const fresh =
+        status?.current &&
+        status.proxy.ok &&
+        status.lastValidGeo !== null &&
+        status.lastValidGeoAt !== null &&
+        now - Date.parse(status.checkedAt) < LAUNCH_RECHECK_MS &&
+        now - Date.parse(status.lastValidGeoAt) < GEO_CACHE_MS &&
+        (browser.timezoneMode !== 'auto' || (status.lastValidTimezoneCurrent && status.lastValidTimezoneAt !== null))
+      let failure: string | null = null
+      if (!fresh) {
+        try {
+          status = await this.check(profileId)
+        } catch (error) {
+          failure = error instanceof Error ? error.message : String(error)
+        }
+      }
+      const detectedNow = status?.current && status.geo.status === 'success' ? status.geo.data : null
+      const reason =
+        failure ?? (status && !status.proxy.ok ? status.proxy.message : (status?.geo.message || 'unknown error'))
+      location = detectedNow ?? status?.lastValidGeo ?? null
+      if (!detectedNow && location) {
+        warnings.push(`Could not refresh the IP location (${reason}). Using the location detected for this proxy on ${status?.lastValidGeoAt}.`)
+      }
+      if (!location) locationNote = reason
 
-    let failure: string | null = null
-    try {
-      status = await this.check(profileId)
-    } catch (error) {
-      failure = error instanceof Error ? error.message : String(error)
-    }
-    const detectedNow = status?.current && status.geo.data?.timezone
-    if (detectedNow) return { ...plan, timezone: status!.geo.data!.timezone, timezoneSource: 'auto' }
-
-    const reason =
-      failure ??
-      (status && !status.proxy.ok ? status.proxy.message : (status?.geo.message ?? 'unknown error'))
-    if (status?.lastValidTimezoneCurrent && status.lastValidTimezone) {
-      return {
-        ...plan,
-        timezone: status.lastValidTimezone,
-        timezoneSource: 'auto',
-        warnings: [
-          `Could not refresh the time zone (${reason}). Using ${status.lastValidTimezone}, detected for this proxy on ${status.lastValidTimezoneAt}.`
-        ]
+      if (browser.timezoneMode === 'auto') {
+        if (detectedNow?.timezone) {
+          timezone = detectedNow.timezone
+        } else if (status?.lastValidTimezoneCurrent && status.lastValidTimezone) {
+          timezone = status.lastValidTimezone
+          if (!fresh || !detectedNow) {
+            // The time zone message comes first: it is what decides whether the window opens.
+            warnings.unshift(
+              `Could not refresh the time zone (${reason}). Using ${status.lastValidTimezone}, detected for this proxy on ${status.lastValidTimezoneAt}.`
+            )
+          }
+        } else {
+          const older = status?.lastValidTimezone
+            ? ` The last detected time zone (${status.lastValidTimezone}) was for a different proxy, so it was not used.`
+            : ''
+          throw new ValidationError(
+            `The time zone could not be detected through this profile’s proxy: ${reason}${older} ` +
+              'Check the proxy and try again, or choose the time zone manually in the profile’s settings.'
+          )
+        }
+        timezoneSource = 'auto'
       }
     }
-    const older = status?.lastValidTimezone
-      ? ` The last detected time zone (${status.lastValidTimezone}) was for a different proxy, so it was not used.`
-      : ''
-    throw new ValidationError(
-      `The time zone could not be detected through this profile’s proxy: ${reason}${older} ` +
-        'Check the proxy and try again, or choose the time zone manually in the profile’s settings.'
-    )
+
+    const rest = resolveLanguageAndGeolocation(browser, location, locationNote)
+    // One "could not refresh" message is enough when the time zone already explains it.
+    const unique = [...new Set([...warnings, ...rest.warnings])]
+    return { ...rest, timezone, timezoneSource, warnings: unique }
+  }
+
+  /**
+   * What a launch would apply, from stored results only (no network request, never throws).
+   * Used by the configuration summary of a closed profile.
+   */
+  previewPlan(profileId: string): LaunchPlan & { timezoneNote: string | null } {
+    const profile = this.deps.profiles.get(profileId)
+    const { browser } = profile
+    const status = this.status(profileId)
+    let timezone: string | null = null
+    let timezoneNote: string | null = null
+    if (browser.timezoneMode === 'manual') timezone = browser.timezoneManual
+    if (browser.timezoneMode === 'auto') {
+      if (status?.lastValidTimezoneCurrent && status.lastValidTimezone) timezone = status.lastValidTimezone
+      else timezoneNote = 'Not detected yet for this proxy; it is detected when the profile opens.'
+    }
+    const location = status?.lastValidGeo ?? null
+    const rest = resolveLanguageAndGeolocation(browser, location, location ? null : 'not detected yet')
+    return { ...rest, timezone, timezoneSource: browser.timezoneMode === 'manual' && timezone ? 'manual' : browser.timezoneMode === 'auto' && timezone ? 'auto' : 'off', timezoneNote }
   }
 
   /**

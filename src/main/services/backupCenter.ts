@@ -549,7 +549,7 @@ export class BackupCenter {
           ? { enabled: true, protocol: proxy.protocol, host: proxy.host, port: proxy.port, username: proxy.username ?? '', bypassRules: proxy.bypassRules }
           : undefined
       },
-      { baseBrowserConfig: meta.browser, allowSharedProxy: true }
+      { baseBrowserConfig: meta.browser, baseOptions: meta.options, allowSharedProxy: true }
     )
   }
 
@@ -570,7 +570,9 @@ export class BackupCenter {
       groupId,
       tags: meta.tags ?? []
     })
-    if (meta.browser) this.deps.profiles.replaceBrowserConfig(id, meta.browser as BrowserConfig)
+    if (meta.browser || meta.options) {
+      this.deps.profiles.replaceBrowserConfig(id, (meta.browser ?? before.browser) as BrowserConfig, meta.options)
+    }
     details.push('Profile settings restored; its name and current proxy settings were kept.')
     details.push(`Settings before the restore (for reference): ${JSON.stringify(this.deps.profiles.toPortable(before))}`)
   }

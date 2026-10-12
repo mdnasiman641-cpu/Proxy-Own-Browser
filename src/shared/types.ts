@@ -1,4 +1,5 @@
 import type { BrowserConfig, BrowserConfigUpdate } from './browserConfig'
+import type { ProfileOptions, ProfileOptionsUpdate } from './profileOptions'
 
 /** Proxy protocols Chromium supports for per-session proxy rules. */
 export const PROXY_PROTOCOLS = ['http', 'https', 'socks4', 'socks5'] as const
@@ -32,6 +33,8 @@ export interface Profile {
   tags: string[]
   /** Language, time zone, window, zoom, User-Agent and permission settings. */
   browser: BrowserConfig
+  /** Startup, window, downloads, labels and other per-profile options. */
+  options: ProfileOptions
   createdAt: string
   updatedAt: string
   lastOpenedAt: string | null
@@ -63,6 +66,8 @@ export interface ProfileInput {
   tags?: string[]
   /** Changes to the profile's browser settings (fields left out keep their value). */
   browser?: BrowserConfigUpdate
+  /** Changes to the profile's other options (fields left out keep their value). */
+  options?: ProfileOptionsUpdate
 }
 
 export type ProfileUpdate = Partial<ProfileInput>
@@ -418,6 +423,9 @@ export interface ProfileNetworkStatus {
   /** Last time this proxy was tested successfully, and the exit IP seen then. */
   lastSuccessAt: string | null
   lastSuccessIp: string | null
+  /** Last successful location of this proxy's exit IP (kept when a later lookup fails). */
+  lastValidGeo: IpGeolocation | null
+  lastValidGeoAt: string | null
 }
 
 /** Time zone that JavaScript in an open profile window actually reported. */
@@ -565,10 +573,91 @@ export interface RuntimeInfo {
     cpuCores: number
     totalMemoryMb: number
     freeMemoryMb: number
+    /** Primary display as Windows reports it (real values; never changed by the app). */
+    screen: { width: number; height: number; scaleFactor: number; displays: number }
   }
+}
+
+/**
+ * The configuration a profile uses (open) or would use (closed), from saved settings, stored
+ * network results and — when open — what the window actually applied.
+ */
+export interface ProfileEffectiveConfig {
+  profileId: string
+  open: boolean
+  userAgent: string
+  /** Why a custom User-Agent does not match the installed engine, or null. */
+  userAgentConflict: string | null
+  timezone: { value: string | null; source: 'off' | 'manual' | 'auto'; note: string | null }
+  language: { locale: string | null; acceptLanguage: string | null; source: 'default' | 'manual' | 'auto' }
+  geolocation: { latitude: number; longitude: number; accuracy: number; source: 'manual' | 'auto' } | null
+  warnings: string[]
+  /** From the open window (null when closed). */
+  launchReport: LaunchReport | null
 }
 
 export interface ResourcePressure {
   level: 'ok' | 'warning' | 'high'
   messages: string[]
+}
+
+/** An unpacked extension installed into one profile (copied into the app's data folder). */
+export interface ProfileExtension {
+  id: string
+  profileId: string
+  name: string
+  version: string
+  manifestVersion: number
+  /** Chromium's id once it has been loaded at least once. */
+  chromeId: string | null
+  enabled: boolean
+  /** Why the latest load failed, if it did. */
+  lastError: string | null
+  addedAt: string
+}
+
+/** One cookie of a profile, without its value. */
+export interface CookieSummary {
+  domain: string
+  name: string
+  path: string
+  secure: boolean
+  httpOnly: boolean
+  /** Null for session cookies. */
+  expires: string | null
+}
+
+export interface ProfileStorageInfo {
+  partition: string
+  folder: string
+  exists: boolean
+  /** Bytes on disk of the profile's own browser data, or null if not measured. */
+  bytes: number | null
+  files: number
+  /** The profile's storage was opened in this run (its files stay in use until restart). */
+  inUseThisRun: boolean
+  open: boolean
+  extensionsFolder: string
+}
+
+export type ClearDataKind = 'cookies' | 'cache' | 'site' | 'all'
+
+export interface ClearDataResult {
+  kind: ClearDataKind
+  origin: string | null
+  removedCookies: number | null
+  message: string
+}
+
+/** What happened to one setting when a profile window opened. */
+export interface LaunchReportItem {
+  setting: string
+  status: 'applied' | 'not-set' | 'failed' | 'unsupported' | 'warning'
+  detail: string
+}
+
+export interface LaunchReport {
+  profileId: string
+  openedAt: string
+  items: LaunchReportItem[]
 }
